@@ -28,3 +28,7 @@ use the editor.
   own key and store it in Secrets.
 - **Secrets.** Lovable manages them. Do not put secret values in the repo.
 <!-- LOVABLE:END -->
+
+## Product implementation rule
+
+- Keep account access and trading controls as clearly labeled, UI-only previews until the user supplies Deriv setup and explicitly requests live integration; never imply that a bot is connected or trading when it is not.
