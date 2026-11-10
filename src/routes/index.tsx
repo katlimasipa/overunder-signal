@@ -1,34 +1,35 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import {
-  ArrowDownRight,
   ArrowUpRight,
   Bell,
-  Check,
-  ChevronDown,
-  CircleHelp,
   Clock3,
-  Command,
-  Copy,
   Disc3,
+  Download,
   History,
   LayoutDashboard,
   Menu,
   Moon,
-  MoreHorizontal,
   Pause,
   Play,
-  Plus,
   ShieldCheck,
-  SlidersHorizontal,
   Sun,
   TrendingUp,
   X,
 } from "lucide-react";
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -39,6 +40,16 @@ import {
 } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { DerivBot } from "@/lib/deriv-bot";
+import { createDerivAuthorizationUrl } from "@/lib/deriv-oauth";
+import {
+  createPublicDerivSocket,
+  DerivSocketClient,
+  type DerivMessage,
+  type DerivTick,
+} from "@/lib/deriv-socket";
+import { DERIV_MARKETS, type DerivAccount } from "@/lib/deriv-shared";
+import { lastDigit, type StrategyTrade } from "@/lib/over-under-strategy";
 
 export const Route = createFileRoute("/")({
   head: () => ({
@@ -46,12 +57,12 @@ export const Route = createFileRoute("/")({
       { title: "OverUnderAuto — Strategy workspace" },
       {
         name: "description",
-        content: "Explore the OverUnderAuto digit strategy workspace and risk controls in preview mode.",
+        content: "Live Deriv market feed, digit strategy controls, and account-level risk limits.",
       },
       { property: "og:title", content: "OverUnderAuto — Strategy workspace" },
       {
         property: "og:description",
-        content: "A clear trading workspace preview for digit strategies and risk settings.",
+        content: "A live market workspace for OverUnderAuto's digit strategy.",
       },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
@@ -60,461 +71,1239 @@ export const Route = createFileRoute("/")({
   component: Dashboard,
 });
 
-const tickPrices = [
-  { time: "20:44:18", price: "4.551", digit: "1" },
-  { time: "20:44:17", price: "4.848", digit: "8" },
-  { time: "20:44:16", price: "4.836", digit: "6" },
-  { time: "20:44:15", price: "4.821", digit: "1" },
-  { time: "20:44:14", price: "4.797", digit: "7" },
-  { time: "20:44:13", price: "4.810", digit: "0" },
-  { time: "20:44:12", price: "4.788", digit: "8" },
-  { time: "20:44:11", price: "4.766", digit: "6" },
-  { time: "20:44:10", price: "4.751", digit: "1" },
-  { time: "20:44:09", price: "4.739", digit: "9" },
-];
+type FeedPoint = { epoch: number; quote: number; pipSize: number; digit: number };
+type FeedStatus = "connecting" | "live" | "reconnecting" | "unavailable";
 
-const digitHistory = [
-  5, 5, 1, 8, 4, 1, 6, 2, 9, 3, 7, 1, 0, 8, 5, 4, 6, 1, 3, 8, 7, 0, 2, 1, 9, 4, 7, 5, 1, 6, 8, 3, 0, 4, 5, 7, 2, 1, 9, 8,
-];
-
-const recoverySteps = ["×1", "×1.5", "×2", "×3", "×5"];
+const recoverySteps = [1, 1.5, 2, 3, 5];
 
 function Dashboard() {
   const [isDark, setIsDark] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
-  const [mode, setMode] = useState("digit-match");
-  const [symbol, setSymbol] = useState("Volatility 100 (1s) Index");
-  const [multiplier, setMultiplier] = useState("×1.5");
-  const [profitTargetEnabled, setProfitTargetEnabled] = useState(true);
+  const [botBusy, setBotBusy] = useState(false);
+  const [symbol, setSymbol] = useState<string>("1HZ100V");
+  const [stake, setStake] = useState("1.00");
+  const [duration, setDuration] = useState("1");
+  const [multiplier, setMultiplier] = useState(1.5);
+  const [takeProfitEnabled, setTakeProfitEnabled] = useState(true);
+  const [takeProfit, setTakeProfit] = useState("25.00");
   const [stopLossEnabled, setStopLossEnabled] = useState(true);
+  const [stopLoss, setStopLoss] = useState("10.00");
   const [notifyEnabled, setNotifyEnabled] = useState(true);
   const [selectedTab, setSelectedTab] = useState("trades");
-  const [authView, setAuthView] = useState<"signin" | "signup" | null>(null);
+  const [chartWindow, setChartWindow] = useState(60);
+  const [accounts, setAccounts] = useState<DerivAccount[]>([]);
+  const [selectedAccountId, setSelectedAccountId] = useState("");
+  const [accountsLoading, setAccountsLoading] = useState(true);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [liveConfirmationOpen, setLiveConfirmationOpen] = useState(false);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [feedStatus, setFeedStatus] = useState<FeedStatus>("connecting");
+  const [feed, setFeed] = useState<FeedPoint[]>([]);
+  const [trades, setTrades] = useState<StrategyTrade[]>([]);
+  const [sessionPnl, setSessionPnl] = useState(0);
+  const [lossStreak, setLossStreak] = useState(0);
+  const [hasOpenTrade, setHasOpenTrade] = useState(false);
   const [notice, setNotice] = useState("");
-  const [mobileMenu, setMobileMenu] = useState(false);
+  const publicSocketRef = useRef<DerivSocketClient | null>(null);
+  const botSocketRef = useRef<DerivSocketClient | null>(null);
+  const botRef = useRef<DerivBot | null>(null);
+  const noticeTimerRef = useRef<number | null>(null);
+
+  const selectedAccount =
+    accounts.find((account) => account.accountId === selectedAccountId) ?? null;
+  const market = DERIV_MARKETS.find((entry) => entry.symbol === symbol) ?? DERIV_MARKETS[4];
+  const latestTick = feed.at(-1) ?? null;
+  const visibleChartFeed = useMemo(() => {
+    const cutoff = Math.floor(Date.now() / 1000) - chartWindow;
+    return feed.filter((point) => point.epoch >= cutoff);
+  }, [chartWindow, feed]);
+  const chartPath = useMemo(() => makeChartPath(visibleChartFeed), [visibleChartFeed]);
+  const completedTrades = trades.filter((trade) => trade.status !== "Open");
+  const wins = completedTrades.filter((trade) => trade.status === "Won").length;
+  const losses = completedTrades.filter((trade) => trade.status === "Lost").length;
+  const winRate = completedTrades.length
+    ? `${((wins / completedTrades.length) * 100).toFixed(1)}%`
+    : "—";
+  const currentSignal =
+    lossStreak > 0
+      ? "Under 8 · recovery"
+      : latestTick?.digit === 0 || latestTick?.digit === 1
+        ? "Over 1 · entry"
+        : "Waiting for 0 or 1";
+  const botStatus = isRunning ? "Running" : botBusy ? "Finishing open trade" : "Ready";
 
   function showNotice(message: string) {
     setNotice(message);
-    window.setTimeout(() => setNotice(""), 3800);
+    if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    noticeTimerRef.current = window.setTimeout(() => setNotice(""), 4200);
   }
 
-  function handleAccountSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setAuthView(null);
-    showNotice("Account access is a preview. Sign-in is not connected yet.");
+  useEffect(
+    () => () => {
+      if (noticeTimerRef.current !== null) window.clearTimeout(noticeTimerRef.current);
+    },
+    [],
+  );
+
+  useEffect(() => {
+    void fetch("/api/deriv/session", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok)
+          throw new Error("Your Deriv session has expired. Connect again to continue.");
+        const payload = (await response.json()) as { accounts?: DerivAccount[] };
+        const nextAccounts = Array.isArray(payload.accounts) ? payload.accounts : [];
+        setAccounts(nextAccounts);
+        setSelectedAccountId((current) =>
+          current && nextAccounts.some((account) => account.accountId === current)
+            ? current
+            : ((nextAccounts.find((account) => account.accountType === "demo") ?? nextAccounts[0])
+                ?.accountId ?? ""),
+        );
+      })
+      .catch((error: unknown) => {
+        showNotice(error instanceof Error ? error.message : "Could not read your Deriv session.");
+      })
+      .finally(() => setAccountsLoading(false));
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    let reconnectTimer: number | null = null;
+    let currentSocket: DerivSocketClient | null = null;
+    setFeed([]);
+    setFeedStatus("connecting");
+
+    const connectFeed = () => {
+      const client = createPublicDerivSocket();
+      currentSocket = client;
+      publicSocketRef.current = client;
+      client.onTick((tick) => {
+        const point = feedPoint(tick);
+        if (!point || disposed) return;
+        setFeed((current) =>
+          current.at(-1)?.epoch === point.epoch ? current : [...current.slice(-79), point],
+        );
+        setFeedStatus("live");
+      });
+      client.onClose(() => {
+        if (disposed) return;
+        setFeedStatus("reconnecting");
+        reconnectTimer = window.setTimeout(connectFeed, 2500);
+      });
+
+      void client
+        .connect()
+        .then(async () => {
+          if (disposed) return;
+          const history = await client.request({
+            ticks_history: symbol,
+            count: 40,
+            end: "latest",
+            style: "ticks",
+          });
+          const historical = historyPoints(history);
+          if (historical.length && !disposed) setFeed(historical.slice(-80));
+          await client.subscribeTicks(symbol);
+          if (!disposed) setFeedStatus("live");
+        })
+        .catch(() => {
+          if (disposed) return;
+          setFeedStatus("unavailable");
+          reconnectTimer = window.setTimeout(connectFeed, 3500);
+        });
+    };
+
+    connectFeed();
+    return () => {
+      disposed = true;
+      if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
+      currentSocket?.close();
+      if (publicSocketRef.current === currentSocket) publicSocketRef.current = null;
+    };
+  }, [symbol]);
+
+  async function beginDerivAuth(intent: "login" | "signup") {
+    setAuthBusy(true);
+    try {
+      const url = await createDerivAuthorizationUrl(intent, window.location.origin);
+      window.location.assign(url);
+    } catch (error) {
+      setAuthBusy(false);
+      showNotice(error instanceof Error ? error.message : "Could not start Deriv sign-in.");
+    }
+  }
+
+  async function disconnectDeriv() {
+    if (isRunning || botBusy || hasOpenTrade) {
+      showNotice("Pause the bot and let the open trade finish before disconnecting.");
+      return;
+    }
+    setAccountBusy(true);
+    try {
+      await fetch("/api/deriv/session", {
+        method: "POST",
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      setAccounts([]);
+      setSelectedAccountId("");
+      showNotice("Deriv account disconnected.");
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function startBot() {
+    if (!selectedAccount) {
+      showNotice("Connect your Deriv account before starting the bot.");
+      return;
+    }
+    if (botBusy) {
+      showNotice("Wait for the open trade to settle before restarting.");
+      return;
+    }
+    const baseStake = Number(stake);
+    const takeProfitValue = takeProfitEnabled ? Number(takeProfit) : null;
+    const stopLossValue = stopLossEnabled ? Number(stopLoss) : null;
+    if (!Number.isFinite(baseStake) || baseStake < 0.35) {
+      showNotice("Enter a base stake of at least $0.35.");
+      return;
+    }
+    if (
+      (takeProfitValue !== null && (!Number.isFinite(takeProfitValue) || takeProfitValue <= 0)) ||
+      (stopLossValue !== null && (!Number.isFinite(stopLossValue) || stopLossValue <= 0))
+    ) {
+      showNotice("Enter a positive amount for each enabled risk limit.");
+      return;
+    }
+    if (
+      takeProfitValue !== null &&
+      stopLossValue !== null &&
+      takeProfitValue <= 0 &&
+      stopLossValue <= 0
+    ) {
+      showNotice("At least one risk limit must be greater than zero.");
+      return;
+    }
+
+    setBotBusy(true);
+    try {
+      const otpResponse = await fetch("/api/deriv/otp", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        credentials: "same-origin",
+        cache: "no-store",
+        body: JSON.stringify({ accountId: selectedAccount.accountId }),
+      });
+      const otpPayload = (await otpResponse.json()) as { url?: string; error?: string };
+      if (!otpResponse.ok || !otpPayload.url)
+        throw new Error(otpPayload.error ?? "Could not connect to this Deriv account.");
+
+      const socket = new DerivSocketClient(otpPayload.url);
+      const runner = new DerivBot(
+        socket,
+        {
+          symbol,
+          currency: selectedAccount.currency,
+          duration: Number(duration),
+          baseStake,
+          recoveryMultiplier: multiplier,
+          takeProfit: takeProfitValue,
+          stopLoss: stopLossValue,
+          initialPnl: sessionPnl,
+          initialLossStreak: lossStreak,
+        },
+        {
+          onTrade: (trade) => {
+            setTrades((current) => {
+              const index = current.findIndex((existing) => existing.id === trade.id);
+              if (index < 0) return [trade, ...current].slice(0, 100);
+              const next = [...current];
+              next[index] = trade;
+              return next;
+            });
+            setHasOpenTrade(trade.status === "Open");
+            if (trade.status !== "Open" && notifyEnabled) {
+              showNotice(
+                `${trade.contract} ${trade.status.toLowerCase()} · ${formatMoney(trade.profit ?? 0, selectedAccount.currency)}`,
+              );
+            }
+          },
+          onPnl: (profit, nextLossStreak) => {
+            setSessionPnl(profit);
+            setLossStreak(nextLossStreak);
+            if (!runner.isActive && !runner.isBusy) closeBotSocket(runner, socket);
+          },
+          onStop: (reason) => {
+            setIsRunning(false);
+            showNotice(reason);
+            closeBotSocket(runner, socket);
+          },
+          onError: (error) => {
+            setIsRunning(false);
+            setHasOpenTrade(runner.hasOpenContract);
+            showNotice(
+              runner.hasOpenContract
+                ? "Deriv disconnected while a contract was open. Check your Deriv contract history before starting again."
+                : error.message,
+            );
+            closeBotSocket(runner, socket);
+          },
+        },
+      );
+      botSocketRef.current = socket;
+      botRef.current = runner;
+      setIsRunning(true);
+      await runner.start();
+      if (!runner.isActive) setIsRunning(false);
+    } catch (error) {
+      setIsRunning(false);
+      showNotice(error instanceof Error ? error.message : "Could not start the bot.");
+    } finally {
+      setBotBusy(false);
+    }
+  }
+
+  function startRequestedBot() {
+    if (selectedAccount?.accountType === "real") setLiveConfirmationOpen(true);
+    else void startBot();
+  }
+
+  function pauseBot() {
+    const runner = botRef.current;
+    runner?.pause();
+    setIsRunning(false);
+    if (runner && !runner.isBusy) closeBotSocket(runner, botSocketRef.current);
+    showNotice("Bot paused. An open trade will still be monitored until it settles.");
+  }
+
+  function closeBotSocket(runner: DerivBot, socket: DerivSocketClient | null) {
+    if (botRef.current !== runner || runner.isBusy) return;
+    socket?.close();
+    botRef.current = null;
+    botSocketRef.current = null;
+    setHasOpenTrade(false);
+  }
+
+  function resetSession() {
+    if (isRunning || botBusy || hasOpenTrade) {
+      showNotice("Pause the bot and let any open trade finish before resetting the session.");
+      return;
+    }
+    setTrades([]);
+    setSessionPnl(0);
+    setLossStreak(0);
+    showNotice("Session results cleared.");
+  }
+
+  function exportTrades() {
+    if (!trades.length) {
+      showNotice("There are no trades to export yet.");
+      return;
+    }
+    const rows = [
+      ["Time", "Entry digit", "Contract", "Exit digit", "Stake", "Status", "Profit"],
+      ...[...trades]
+        .reverse()
+        .map((trade) => [
+          trade.time,
+          trade.entryDigit,
+          trade.contract,
+          trade.exitDigit,
+          trade.stake,
+          trade.status,
+          trade.profit ?? "",
+        ]),
+    ];
+    const csv = rows
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
+      .join("\r\n");
+    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `overunder-session-${new Date().toISOString().slice(0, 10)}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
   }
 
   return (
-    <div className={isDark ? "dark min-h-screen bg-background text-foreground" : "min-h-screen bg-background text-foreground"}>
-      <div className="min-h-screen">
-        <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur-sm">
-          <div className="mx-auto flex h-[68px] max-w-[1760px] items-center justify-between gap-3 px-4 sm:px-6 xl:px-8">
-            <div className="flex min-w-0 items-center gap-3">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="shrink-0 lg:hidden"
-                aria-label="Toggle navigation"
-                onClick={() => setMobileMenu(!mobileMenu)}
-              >
-                {mobileMenu ? <X /> : <Menu />}
-              </Button>
-              <a href="#workspace" className="flex min-w-0 items-center gap-3">
-                <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
-                  <Disc3 className="size-[19px]" strokeWidth={2.25} />
-                </span>
-                <span className="truncate text-[15px] font-extrabold tracking-normal">OverUnderAuto</span>
-              </a>
-              <span className="hidden h-7 w-px bg-border sm:block" />
-              <span className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">
-                <LayoutDashboard className="size-4" /> Workspace
+    <div
+      className={
+        isDark
+          ? "dark min-h-screen bg-background text-foreground"
+          : "min-h-screen bg-background text-foreground"
+      }
+    >
+      <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur-sm">
+        <div className="mx-auto flex h-[68px] max-w-[1760px] items-center justify-between gap-3 px-4 sm:px-6 xl:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <Button
+              variant="ghost"
+              size="icon"
+              className="shrink-0 lg:hidden"
+              aria-label="Toggle navigation"
+              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
+            >
+              {isMobileMenuOpen ? <X /> : <Menu />}
+            </Button>
+            <a href="#workspace" className="flex min-w-0 items-center gap-3">
+              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
+                <Disc3 className="size-[19px]" strokeWidth={2.25} />
+              </span>
+              <span className="truncate text-[15px] font-extrabold">OverUnderAuto</span>
+            </a>
+            <span className="hidden h-7 w-px bg-border sm:block" />
+            <span className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">
+              <LayoutDashboard className="size-4" /> Workspace
+            </span>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            <div className="hidden items-center gap-2 rounded-md border border-border bg-card px-3 py-2 sm:flex">
+              <span
+                className={`size-2 rounded-full ${feedStatus === "live" ? "bg-positive" : "bg-amber-500"}`}
+              />
+              <span className="text-xs font-semibold text-muted-foreground">
+                {feedStatus === "live" ? "Live market feed" : "Connecting feed"}
               </span>
             </div>
-
-            <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-              <div className="hidden items-center gap-2 rounded-md border border-border bg-card px-3 py-2 sm:flex">
-                <span className="size-2 rounded-full bg-amber-500" />
-                <span className="text-xs font-semibold text-muted-foreground">Preview only</span>
-              </div>
-              <Button variant="ghost" size="icon" aria-label="Notifications" onClick={() => showNotice("You’re all caught up.")}>
-                <Bell />
-              </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Notifications"
+              onClick={() =>
+                showNotice(
+                  trades.length
+                    ? `${trades.length} session trade${trades.length === 1 ? "" : "s"} recorded.`
+                    : "You’re all caught up.",
+                )
+              }
+            >
+              <Bell />
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              aria-label={isDark ? "Switch to light appearance" : "Switch to dark appearance"}
+              onClick={() => setIsDark(!isDark)}
+            >
+              {isDark ? <Sun /> : <Moon />}
+            </Button>
+            {accounts.length ? (
               <Button
                 variant="outline"
-                size="icon"
-                aria-label={isDark ? "Switch to light appearance" : "Switch to dark appearance"}
-                onClick={() => setIsDark(!isDark)}
-              >
-                {isDark ? <Sun /> : <Moon />}
-              </Button>
-              <div className="hidden items-center gap-2 md:flex">
-                <Button variant="ghost" size="sm" onClick={() => setAuthView("signin")}>Sign in</Button>
-                <Button size="sm" onClick={() => setAuthView("signup")}>Create account</Button>
-              </div>
-              <Button className="md:hidden" size="sm" onClick={() => setAuthView("signin")}>Sign in</Button>
-            </div>
-          </div>
-          {mobileMenu && (
-            <nav className="flex flex-col gap-1 border-t border-border bg-background px-4 py-3 lg:hidden">
-              <a className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground" href="#workspace" onClick={() => setMobileMenu(false)}>Strategy workspace</a>
-              <a className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted" href="#history" onClick={() => setMobileMenu(false)}>Trade history</a>
-              <a className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted" href="#risk" onClick={() => setMobileMenu(false)}>Risk settings</a>
-            </nav>
-          )}
-        </header>
-
-        <main id="workspace" className="mx-auto max-w-[1760px] px-4 py-6 sm:px-6 lg:py-8 xl:px-8">
-          <div className="mb-7 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-4 sm:flex sm:flex-wrap sm:items-center sm:justify-between">
-            <div className="min-w-0 dashboard-enter">
-              <div className="mb-2 flex flex-wrap items-center gap-2">
-                <span className="text-xs font-bold uppercase tracking-[0.12em] text-brand">Strategy desk</span>
-                <Badge variant="outline" className="rounded-sm border-border bg-card font-medium text-muted-foreground">UI preview</Badge>
-              </div>
-              <h1 className="text-2xl font-bold leading-tight sm:text-[30px]">Good evening</h1>
-              <p className="mt-1 text-sm text-muted-foreground">Your digit strategy, at a glance.</p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button variant="outline" size="sm" className="hidden sm:inline-flex" onClick={() => showNotice("Session saved in this preview.")}>
-                <Copy /> Save session
-              </Button>
-              <Button
                 size="sm"
-                className="h-10 px-4 sm:h-9"
-                onClick={() => {
-                  setIsRunning(!isRunning);
-                  if (!isRunning) showNotice("Preview mode only — no trades will be placed.");
-                }}
+                onClick={() => void disconnectDeriv()}
+                disabled={accountBusy || isRunning || botBusy || hasOpenTrade}
               >
-                {isRunning ? <Pause /> : <Play />}
-                {isRunning ? "Pause preview" : "Start preview"}
+                {accountBusy ? "Disconnecting…" : "Disconnect"}
               </Button>
-              <Button variant="ghost" size="icon" aria-label="More actions" onClick={() => showNotice("More session options will appear here.")}>
-                <MoreHorizontal />
+            ) : (
+              <div className="hidden items-center gap-2 md:flex">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void beginDerivAuth("login")}
+                  disabled={authBusy}
+                >
+                  Sign in
+                </Button>
+                <Button size="sm" onClick={() => void beginDerivAuth("signup")} disabled={authBusy}>
+                  Create account
+                </Button>
+              </div>
+            )}
+            {!accounts.length && (
+              <Button
+                className="md:hidden"
+                size="sm"
+                onClick={() => void beginDerivAuth("login")}
+                disabled={authBusy}
+              >
+                Connect
               </Button>
+            )}
+          </div>
+        </div>
+        {isMobileMenuOpen && (
+          <nav className="flex flex-col gap-1 border-t border-border bg-background px-4 py-3 lg:hidden">
+            <a
+              className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground"
+              href="#workspace"
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              Strategy workspace
+            </a>
+            <a
+              className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
+              href="#history"
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              Trade history
+            </a>
+            <a
+              className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
+              href="#risk"
+              onClick={() => setIsMobileMenuOpen(false)}
+            >
+              Risk settings
+            </a>
+            {!accounts.length && (
+              <>
+                <Button
+                  variant="ghost"
+                  className="justify-start"
+                  onClick={() => void beginDerivAuth("login")}
+                  disabled={authBusy}
+                >
+                  Sign in with Deriv
+                </Button>
+                <Button
+                  variant="ghost"
+                  className="justify-start"
+                  onClick={() => void beginDerivAuth("signup")}
+                  disabled={authBusy}
+                >
+                  Create a Deriv account
+                </Button>
+              </>
+            )}
+          </nav>
+        )}
+      </header>
+
+      <main id="workspace" className="mx-auto max-w-[1760px] px-4 py-6 sm:px-6 lg:py-8 xl:px-8">
+        <div className="mb-7 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-4 sm:flex sm:flex-wrap sm:items-center sm:justify-between">
+          <div className="min-w-0 dashboard-enter">
+            <div className="mb-2 flex flex-wrap items-center gap-2">
+              <span className="text-xs font-bold uppercase tracking-[0.12em] text-brand">
+                Strategy desk
+              </span>
+              <Badge
+                variant="outline"
+                className="rounded-sm border-border bg-card font-medium text-muted-foreground"
+              >
+                Over / Under
+              </Badge>
             </div>
+            <h1 className="text-2xl font-bold leading-tight sm:text-[30px]">Strategy workspace</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Live quotes, real account controls, and clear session limits.
+            </p>
           </div>
-
-          <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-4">
-            <Metric label="Session P/L" value="+$26.32" detail="Sample figure" tone="positive" />
-            <Metric label="Win rate" value="66.7%" detail="2 wins · 1 loss" />
-            <Metric label="Trades today" value="3" detail="Preview session" />
-            <Metric label="Bot status" value={isRunning ? "Preview active" : "Ready to review"} detail="Deriv not connected" status />
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="hidden sm:inline-flex"
+              onClick={exportTrades}
+            >
+              <Download /> Export session
+            </Button>
+            <Button
+              size="sm"
+              className="h-10 px-4 sm:h-9"
+              onClick={isRunning ? pauseBot : startRequestedBot}
+              disabled={botBusy || (hasOpenTrade && !isRunning)}
+            >
+              {isRunning ? <Pause /> : <Play />}
+              {botBusy
+                ? "Connecting…"
+                : isRunning
+                  ? "Pause bot"
+                  : hasOpenTrade
+                    ? "Trade settling"
+                    : "Start bot"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Reset session results"
+              onClick={resetSession}
+              disabled={isRunning || botBusy || hasOpenTrade}
+            >
+              <History />
+            </Button>
           </div>
+        </div>
 
-          <div className="grid gap-5 xl:grid-cols-[minmax(250px,300px)_minmax(0,1fr)_minmax(235px,270px)]">
-            <aside className="flex flex-col gap-5 dashboard-enter">
-              <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
-                <SectionHeading title="Connection" note="PREVIEW" />
-                <div className="mt-4 rounded-md border border-border bg-background p-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold">Deriv account</p>
-                      <p className="mt-1 text-xs leading-5 text-muted-foreground">Connect with Deriv Auth 2.0 when setup is ready.</p>
-                    </div>
-                    <span className="mt-1 size-2 shrink-0 rounded-full bg-amber-500" />
+        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <Metric
+            label="Session P/L"
+            value={formatMoney(sessionPnl, selectedAccount?.currency ?? "USD")}
+            detail={`${completedTrades.length} settled trade${completedTrades.length === 1 ? "" : "s"}`}
+            {...(sessionPnl > 0 ? { tone: "positive" as const } : {})}
+          />
+          <Metric label="Win rate" value={winRate} detail={`${wins} wins · ${losses} losses`} />
+          <Metric label="Trades today" value={String(trades.length)} detail="Current session" />
+          <Metric
+            label="Bot status"
+            value={botStatus}
+            detail={
+              selectedAccount
+                ? `${selectedAccount.accountType === "demo" ? "Demo" : "Real"} account selected`
+                : "Connect Deriv to trade"
+            }
+            status={isRunning}
+          />
+        </div>
+
+        <div className="grid gap-5 xl:grid-cols-[minmax(250px,300px)_minmax(0,1fr)_minmax(235px,270px)]">
+          <aside className="flex flex-col gap-5 dashboard-enter">
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+              <SectionHeading
+                title="Connection"
+                note={accounts.length ? "CONNECTED" : "DERIV AUTH 2.0"}
+              />
+              <div className="mt-4 rounded-md border border-border bg-background p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">Deriv account</p>
+                    <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                      {accountsLoading
+                        ? "Checking your secure session…"
+                        : selectedAccount
+                          ? `${selectedAccount.accountType === "demo" ? "Demo" : "Real"} account ending ${selectedAccount.accountId.slice(-4)}`
+                          : "Sign in securely with Deriv to select an account."}
+                    </p>
                   </div>
+                  <span
+                    className={`mt-1 size-2 shrink-0 rounded-full ${selectedAccount ? "bg-positive" : "bg-amber-500"}`}
+                  />
                 </div>
-                <Button variant="outline" className="mt-3 w-full" onClick={() => showNotice("Deriv sign-in will be connected in a later setup step.")}>
-                  Connect Deriv
+              </div>
+              {accounts.length ? (
+                <>
+                  <Field label="Trading account">
+                    <Select value={selectedAccountId} onValueChange={setSelectedAccountId}>
+                      <SelectTrigger aria-label="Trading account">
+                        <SelectValue placeholder="Select account" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {accounts.map((account) => (
+                          <SelectItem key={account.accountId} value={account.accountId}>
+                            {account.accountType === "demo" ? "Demo" : "Real"} · …
+                            {account.accountId.slice(-4)} · {account.currency}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                  <div className="mt-4 flex items-center justify-between border-t border-border pt-4 text-sm">
+                    <span className="text-muted-foreground">Balance</span>
+                    <span className="numeric font-semibold">
+                      {selectedAccount?.balance === null || selectedAccount?.balance === undefined
+                        ? "—"
+                        : formatMoney(selectedAccount.balance, selectedAccount.currency)}
+                    </span>
+                  </div>
+                </>
+              ) : (
+                <Button
+                  variant="outline"
+                  className="mt-3 w-full"
+                  onClick={() => void beginDerivAuth("login")}
+                  disabled={authBusy || accountsLoading}
+                >
+                  {authBusy ? "Opening Deriv…" : "Connect Deriv"}
                   <ArrowUpRight />
                 </Button>
-                <div className="mt-4 flex items-center justify-between border-t border-border pt-4 text-sm">
-                  <span className="text-muted-foreground">Account type</span>
-                  <Badge variant="secondary" className="rounded-sm">Demo</Badge>
-                </div>
-              </section>
+              )}
+              {!accounts.length && (
+                <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
+                  Your access token stays in a secure, HTTP-only session cookie.
+                </p>
+              )}
+            </section>
 
-              <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
-                <SectionHeading title="Strategy" note="CONFIGURATION" />
-                <div className="mt-4 space-y-4">
-                  <Field label="Trading strategy">
-                    <Select value={mode} onValueChange={setMode}>
-                      <SelectTrigger aria-label="Trading strategy"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="digit-match">Last digit · Over / Under</SelectItem>
-                        <SelectItem value="digit-differ">Last digit · Differs</SelectItem>
-                        <SelectItem value="digit-even">Last digit · Even / Odd</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field label="Market">
-                    <Select value={symbol} onValueChange={setSymbol}>
-                      <SelectTrigger aria-label="Market"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="Volatility 10 (1s) Index">Volatility 10 (1s)</SelectItem>
-                        <SelectItem value="Volatility 25 (1s) Index">Volatility 25 (1s)</SelectItem>
-                        <SelectItem value="Volatility 50 (1s) Index">Volatility 50 (1s)</SelectItem>
-                        <SelectItem value="Volatility 75 (1s) Index">Volatility 75 (1s)</SelectItem>
-                        <SelectItem value="Volatility 100 (1s) Index">Volatility 100 (1s)</SelectItem>
-                        <SelectItem value="Volatility 100 Index">Volatility 100</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <div className="grid grid-cols-2 gap-3">
-                    <Field label="Base stake">
-                      <div className="relative">
-                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
-                        <Input className="pl-7 numeric" aria-label="Base stake" type="number" defaultValue="1.00" min="0" step="0.1" />
-                      </div>
-                    </Field>
-                    <Field label="Duration">
-                      <Select defaultValue="1">
-                        <SelectTrigger aria-label="Duration"><SelectValue /></SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="1">1 tick</SelectItem>
-                          <SelectItem value="2">2 ticks</SelectItem>
-                          <SelectItem value="5">5 ticks</SelectItem>
-                          <SelectItem value="10">10 ticks</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  </div>
-                  <div className="rounded-md bg-brand-soft p-3">
-                    <p className="text-xs font-bold uppercase tracking-[0.08em] text-brand">Entry rule</p>
-                    <p className="mt-1.5 text-sm leading-5 text-foreground">A last digit of <span className="numeric font-semibold">0</span> or <span className="numeric font-semibold">1</span> signals <span className="font-bold text-brand">Over 1</span>.</p>
-                    <p className="mt-2 text-xs leading-[1.6] text-muted-foreground">After a loss: switch to Under 8 until a win, then analyze again.</p>
-                  </div>
-                </div>
-              </section>
-
-              <section id="risk" className="rounded-lg border border-border bg-card p-4 sm:p-5">
-                <SectionHeading title="Risk limits" note="YOUR GUARDRAILS" />
-                <div className="mt-4 space-y-4">
-                  <RiskInput label="Take profit" enabled={profitTargetEnabled} setEnabled={setProfitTargetEnabled} value="25.00" />
-                  <RiskInput label="Stop loss" enabled={stopLossEnabled} setEnabled={setStopLossEnabled} value="10.00" />
-                  <div>
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <span className="text-xs font-semibold">Recovery multiplier</span>
-                      <Badge variant="outline" className="rounded-sm font-medium">Recovery on loss</Badge>
-                    </div>
-                    <div className="grid grid-cols-5 gap-1.5">
-                      {recoverySteps.map((step) => (
-                        <Button
-                          key={step}
-                          variant={multiplier === step ? "default" : "outline"}
-                          size="sm"
-                          className="min-w-0 px-1 text-xs numeric"
-                          aria-pressed={multiplier === step}
-                          onClick={() => setMultiplier(step)}
-                        >
-                          {step}
-                        </Button>
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+              <SectionHeading title="Strategy" note="OVER / UNDER" />
+              <div className="mt-4 space-y-4">
+                <Field label="Market">
+                  <Select value={symbol} onValueChange={setSymbol}>
+                    <SelectTrigger aria-label="Market">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {DERIV_MARKETS.map((entry) => (
+                        <SelectItem key={entry.symbol} value={entry.symbol}>
+                          {entry.label}
+                        </SelectItem>
                       ))}
-                    </div>
-                    <p className="mt-2 text-xs leading-5 text-muted-foreground">Current setting: {multiplier} of the previous stake.</p>
-                  </div>
-                </div>
-              </section>
-            </aside>
-
-            <div className="flex min-w-0 flex-col gap-5">
-              <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
-                <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-5 dashboard-enter-delay">
-                  <div className="flex flex-wrap items-start justify-between gap-3">
-                    <div>
-                      <SectionHeading title="Last digit" note="SAMPLE FEED" />
-                      <p className="mt-2 text-xs text-muted-foreground">{symbol}</p>
-                    </div>
-                    <Badge variant="outline" className="rounded-sm border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300">Not live</Badge>
-                  </div>
-                  <div className="mt-6 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
-                    <div className="flex items-end gap-4">
-                      <span className="numeric text-[84px] font-medium leading-[0.85] text-brand sm:text-[96px]">1</span>
-                      <div className="pb-1">
-                        <p className="text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">Latest digit</p>
-                        <p className="numeric mt-1 text-sm font-medium">From 4.551</p>
-                      </div>
-                    </div>
-                    <div className="pb-1 text-right">
-                      <p className="text-xs text-muted-foreground">Sample price</p>
-                      <p className="numeric mt-1 text-xl font-semibold">4.551</p>
-                    </div>
-                  </div>
-                  <div className="mt-6 grid grid-cols-10 gap-1.5 sm:gap-2" aria-label="Sample digit history">
-                    {digitHistory.map((digit, index) => (
-                      <span
-                        key={`${digit}-${index}`}
-                        className={`numeric grid aspect-square min-w-0 place-items-center rounded-[4px] text-xs font-semibold sm:text-sm ${index === digitHistory.length - 1 ? "bg-brand text-primary-foreground" : index === digitHistory.length - 4 ? "bg-positive-soft text-positive" : "bg-background text-muted-foreground"}`}
-                      >
-                        {digit}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <div className="grid grid-cols-2 gap-3">
+                  <Field label="Base stake">
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+                        $
                       </span>
+                      <Input
+                        className="pl-7 numeric"
+                        aria-label="Base stake"
+                        type="number"
+                        value={stake}
+                        onChange={(event) => setStake(event.target.value)}
+                        min="0.35"
+                        step="0.05"
+                      />
+                    </div>
+                  </Field>
+                  <Field label="Duration">
+                    <Select value={duration} onValueChange={setDuration}>
+                      <SelectTrigger aria-label="Duration">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">1 tick</SelectItem>
+                        <SelectItem value="2">2 ticks</SelectItem>
+                        <SelectItem value="5">5 ticks</SelectItem>
+                        <SelectItem value="10">10 ticks</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </Field>
+                </div>
+                <div className="rounded-md bg-brand-soft p-3">
+                  <p className="text-xs font-bold uppercase tracking-[0.08em] text-brand">
+                    Entry rule
+                  </p>
+                  <p className="mt-1.5 text-sm leading-5">
+                    When the latest digit is <span className="numeric font-semibold">0</span> or{" "}
+                    <span className="numeric font-semibold">1</span>, place{" "}
+                    <span className="font-bold text-brand">Over 1</span>.
+                  </p>
+                  <p className="mt-2 text-xs leading-[1.6] text-muted-foreground">
+                    After a loss, use Under 8 until it wins, then resume analysis.
+                  </p>
+                </div>
+              </div>
+            </section>
+
+            <section id="risk" className="rounded-lg border border-border bg-card p-4 sm:p-5">
+              <SectionHeading title="Risk limits" note="SESSION GUARDRAILS" />
+              <div className="mt-4 space-y-4">
+                <RiskInput
+                  label="Take profit"
+                  enabled={takeProfitEnabled}
+                  setEnabled={setTakeProfitEnabled}
+                  value={takeProfit}
+                  setValue={setTakeProfit}
+                />
+                <RiskInput
+                  label="Stop loss"
+                  enabled={stopLossEnabled}
+                  setEnabled={setStopLossEnabled}
+                  value={stopLoss}
+                  setValue={setStopLoss}
+                />
+                <div>
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <span className="text-xs font-semibold">Recovery multiplier</span>
+                    <Badge variant="outline" className="rounded-sm font-medium">
+                      After a loss
+                    </Badge>
+                  </div>
+                  <div className="grid grid-cols-5 gap-1.5">
+                    {recoverySteps.map((step) => (
+                      <Button
+                        key={step}
+                        variant={multiplier === step ? "default" : "outline"}
+                        size="sm"
+                        className="min-w-0 px-1 text-xs numeric"
+                        aria-pressed={multiplier === step}
+                        onClick={() => setMultiplier(step)}
+                      >
+                        ×{step}
+                      </Button>
                     ))}
                   </div>
-                  <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-xs">
-                    <span className="text-muted-foreground">Entry signal</span>
-                    <span className="flex items-center gap-2 font-semibold text-brand"><span className="size-1.5 rounded-full bg-positive" /> Over 1 · sample only</span>
-                  </div>
-                </section>
-
-                <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-5 dashboard-enter-delay">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <SectionHeading title="Market movement" note="SAMPLE DATA" />
-                      <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold"><TrendingUp className="size-4 text-positive" /> 4.551 <span className="text-xs font-medium text-positive">+0.84%</span></p>
-                    </div>
-                    <Select defaultValue="1m">
-                      <SelectTrigger className="h-8 w-[78px] text-xs" aria-label="Chart time range"><SelectValue /></SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="1m">1 min</SelectItem>
-                        <SelectItem value="5m">5 min</SelectItem>
-                        <SelectItem value="15m">15 min</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="mt-5 h-[158px] w-full" role="img" aria-label="Illustrative market line chart">
-                    <svg className="h-full w-full overflow-visible" viewBox="0 0 440 160" preserveAspectRatio="none">
-                      <g className="market-grid">
-                        <line x1="0" y1="20" x2="440" y2="20" />
-                        <line x1="0" y1="60" x2="440" y2="60" />
-                        <line x1="0" y1="100" x2="440" y2="100" />
-                        <line x1="0" y1="140" x2="440" y2="140" />
-                      </g>
-                      <path className="market-line" d="M0 114 C17 108, 21 74, 42 87 S74 128, 92 102 S122 46, 142 69 S171 88, 188 60 S216 76, 231 92 S259 104, 278 69 S305 42, 321 60 S345 112, 362 85 S389 35, 405 52 S429 37, 440 22" />
-                      <circle className="market-point" cx="440" cy="22" r="4" />
-                    </svg>
-                  </div>
-                  <div className="mt-3 flex justify-between text-[10px] text-muted-foreground numeric"><span>20:43:20</span><span>20:43:45</span><span>20:44:10</span><span>20:44:18</span></div>
-                </section>
-              </div>
-
-              <section className="min-w-0 rounded-lg border border-border bg-card dashboard-enter-delay">
-                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
-                  <Tabs value={selectedTab} onValueChange={setSelectedTab}>
-                    <TabsList className="h-9 bg-muted p-1">
-                      <TabsTrigger value="trades" className="h-7 px-3 text-xs"><LayoutDashboard className="mr-1.5 size-3.5" />Trade log</TabsTrigger>
-                      <TabsTrigger value="history" className="h-7 px-3 text-xs"><History className="mr-1.5 size-3.5" />History</TabsTrigger>
-                    </TabsList>
-                  </Tabs>
-                  <Button variant="outline" size="sm" className="h-8" onClick={() => showNotice("Trade records are sample data in this preview.")}>Export log</Button>
+                  <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                    Next recovery stake:{" "}
+                    {formatMoney(
+                      Number(stake) * multiplier ** Math.max(1, lossStreak),
+                      selectedAccount?.currency ?? "USD",
+                    )}
+                    .
+                  </p>
                 </div>
-                <Tabs value={selectedTab} onValueChange={setSelectedTab}>
-                  <TabsContent value="trades" className="m-0">
-                    <TradeTable />
-                  </TabsContent>
-                  <TabsContent value="history" className="m-0">
-                    <TradeTable history />
-                  </TabsContent>
-                </Tabs>
+              </div>
+            </section>
+          </aside>
+
+          <div className="flex min-w-0 flex-col gap-5">
+            <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
+              <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-5 dashboard-enter-delay">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <SectionHeading
+                      title="Last digit"
+                      note={feedStatus === "live" ? "LIVE FEED" : "MARKET FEED"}
+                    />
+                    <p className="mt-2 text-xs text-muted-foreground">{market.label}</p>
+                  </div>
+                  <Badge
+                    variant="outline"
+                    className={`rounded-sm ${feedStatus === "live" ? "border-positive/30 bg-positive-soft text-positive" : "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300"}`}
+                  >
+                    <span className="mr-1.5 inline-block size-1.5 rounded-full bg-current" />
+                    {feedStatus === "live"
+                      ? "Live"
+                      : feedStatus === "reconnecting"
+                        ? "Reconnecting"
+                        : feedStatus === "unavailable"
+                          ? "Unavailable"
+                          : "Connecting"}
+                  </Badge>
+                </div>
+                <div className="mt-6 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
+                  <div className="flex items-end gap-4">
+                    <span className="numeric text-[84px] font-medium leading-[0.85] text-brand sm:text-[96px]">
+                      {latestTick?.digit ?? "–"}
+                    </span>
+                    <div className="pb-1">
+                      <p className="text-[11px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
+                        Latest digit
+                      </p>
+                      <p className="numeric mt-1 text-sm font-medium">
+                        {latestTick
+                          ? `From ${formatQuote(latestTick.quote, latestTick.pipSize)}`
+                          : "Waiting for a quote"}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="pb-1 text-right">
+                    <p className="text-xs text-muted-foreground">
+                      {latestTick ? "Live price" : "Market price"}
+                    </p>
+                    <p className="numeric mt-1 text-xl font-semibold">
+                      {latestTick ? formatQuote(latestTick.quote, latestTick.pipSize) : "—"}
+                    </p>
+                  </div>
+                </div>
+                <div
+                  className="mt-6 grid grid-cols-10 gap-1.5 sm:gap-2"
+                  aria-label="Live digit history"
+                >
+                  {feed.slice(-40).map((point, index) => (
+                    <span
+                      key={`${point.epoch}-${index}`}
+                      className={`numeric grid aspect-square min-w-0 place-items-center rounded-[4px] text-xs font-semibold sm:text-sm ${index === Math.min(feed.length, 40) - 1 ? "bg-brand text-primary-foreground" : "bg-background text-muted-foreground"}`}
+                    >
+                      {point.digit}
+                    </span>
+                  ))}
+                  {!feed.length && (
+                    <p className="col-span-10 py-3 text-center text-xs text-muted-foreground">
+                      The live digit stream will appear here.
+                    </p>
+                  )}
+                </div>
+                <div className="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-border pt-3 text-xs">
+                  <span className="text-muted-foreground">Entry signal</span>
+                  <span className="flex items-center gap-2 font-semibold text-brand">
+                    <span
+                      className={`size-1.5 rounded-full ${currentSignal.startsWith("Waiting") ? "bg-muted-foreground" : "bg-positive"}`}
+                    />
+                    {currentSignal}
+                  </span>
+                </div>
               </section>
 
-              <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <SectionHeading title="Recent ticks" note="SAMPLE STREAM" />
-                  <span className="flex items-center gap-2 text-xs text-muted-foreground"><Clock3 className="size-3.5" />Last 10</span>
+              <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-5 dashboard-enter-delay">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <SectionHeading
+                      title="Market movement"
+                      note={feedStatus === "live" ? "LIVE DATA" : "NO DATA"}
+                    />
+                    <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold">
+                      {latestTick ? (
+                        <>
+                          <TrendingUp className="size-4 text-positive" />
+                          {formatQuote(latestTick.quote, latestTick.pipSize)}
+                        </>
+                      ) : (
+                        <span className="text-muted-foreground">Waiting for market data</span>
+                      )}
+                    </p>
+                  </div>
+                  <Select
+                    value={String(chartWindow)}
+                    onValueChange={(value) => setChartWindow(Number(value))}
+                  >
+                    <SelectTrigger className="h-8 w-[78px] text-xs" aria-label="Chart time range">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="60">1 min</SelectItem>
+                      <SelectItem value="300">5 min</SelectItem>
+                      <SelectItem value="900">15 min</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
-                <div className="mt-4 grid grid-cols-[1fr_1fr_52px] gap-x-4 border-b border-border pb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
-                  <span>Time</span><span className="text-right">Price</span><span className="text-right">Digit</span>
+                <div
+                  className="mt-5 h-[158px] w-full"
+                  role="img"
+                  aria-label="Live market line chart"
+                >
+                  <svg
+                    className="h-full w-full overflow-visible"
+                    viewBox="0 0 440 160"
+                    preserveAspectRatio="none"
+                  >
+                    <g className="market-grid">
+                      <line x1="0" y1="20" x2="440" y2="20" />
+                      <line x1="0" y1="60" x2="440" y2="60" />
+                      <line x1="0" y1="100" x2="440" y2="100" />
+                      <line x1="0" y1="140" x2="440" y2="140" />
+                    </g>
+                    {chartPath && (
+                      <>
+                        <path className="market-line" d={chartPath} />
+                        <circle
+                          className="market-point"
+                          cx="440"
+                          cy={chartPathEndY(chartPath)}
+                          r="4"
+                        />
+                      </>
+                    )}
+                  </svg>
+                  {feed.length < 2 && (
+                    <p className="-mt-20 text-center text-xs text-muted-foreground">
+                      Live prices will draw as ticks arrive.
+                    </p>
+                  )}
                 </div>
-                <div className="divide-y divide-border">
-                  {tickPrices.slice(0, 5).map((tick, index) => (
-                    <div key={tick.time} className="grid grid-cols-[1fr_1fr_52px] items-center gap-x-4 py-2.5 text-sm">
-                      <span className="numeric text-xs text-muted-foreground">{tick.time}</span>
-                      <span className="numeric text-right">{tick.price}</span>
-                      <span className={`numeric text-right font-semibold ${index === 0 ? "text-brand" : "text-muted-foreground"}`}>{tick.digit}</span>
-                    </div>
-                  ))}
+                <div className="mt-3 flex justify-between text-[10px] text-muted-foreground numeric">
+                  <span>
+                    {visibleChartFeed.length ? formatTime(visibleChartFeed.at(0)!.epoch) : "—"}
+                  </span>
+                  <span>
+                    {visibleChartFeed.length ? formatTime(visibleChartFeed.at(-1)!.epoch) : "—"}
+                  </span>
                 </div>
               </section>
             </div>
 
-            <aside className="flex min-w-0 flex-col gap-5 dashboard-enter-delay">
-              <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
-                <SectionHeading title="Session" note="SAMPLE" />
-                <div className="mt-4 rounded-md bg-positive-soft p-4">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">Net P/L</span>
-                    <Badge variant="outline" className="rounded-sm border-positive/30 bg-card font-semibold text-positive">Sample</Badge>
+            <section
+              id="history"
+              className="min-w-0 rounded-lg border border-border bg-card dashboard-enter-delay"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
+                <Tabs value={selectedTab} onValueChange={setSelectedTab}>
+                  <TabsList className="h-9 bg-muted p-1">
+                    <TabsTrigger value="trades" className="h-7 px-3 text-xs">
+                      <LayoutDashboard className="mr-1.5 size-3.5" />
+                      Trade log
+                    </TabsTrigger>
+                    <TabsTrigger value="history" className="h-7 px-3 text-xs">
+                      <History className="mr-1.5 size-3.5" />
+                      History
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+                <Button variant="outline" size="sm" className="h-8" onClick={exportTrades}>
+                  <Download /> Export log
+                </Button>
+              </div>
+              <Tabs value={selectedTab} onValueChange={setSelectedTab}>
+                <TabsContent value="trades" className="m-0">
+                  <TradeTable trades={trades} />
+                </TabsContent>
+                <TabsContent value="history" className="m-0">
+                  <TradeTable trades={completedTrades} history />
+                </TabsContent>
+              </Tabs>
+            </section>
+
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+              <div className="flex items-center justify-between gap-3">
+                <SectionHeading
+                  title="Recent ticks"
+                  note={feedStatus === "live" ? "LIVE STREAM" : "WAITING"}
+                />
+                <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Clock3 className="size-3.5" />
+                  Last 5
+                </span>
+              </div>
+              <div className="mt-4 grid grid-cols-[1fr_1fr_52px] gap-x-4 border-b border-border pb-2 text-[10px] font-bold uppercase tracking-[0.1em] text-muted-foreground">
+                <span>Time</span>
+                <span className="text-right">Price</span>
+                <span className="text-right">Digit</span>
+              </div>
+              <div className="divide-y divide-border">
+                {feed
+                  .slice(-5)
+                  .reverse()
+                  .map((point, index) => (
+                    <div
+                      key={point.epoch}
+                      className="grid grid-cols-[1fr_1fr_52px] items-center gap-x-4 py-2.5 text-sm"
+                    >
+                      <span className="numeric text-xs text-muted-foreground">
+                        {formatTime(point.epoch)}
+                      </span>
+                      <span className="numeric text-right">
+                        {formatQuote(point.quote, point.pipSize)}
+                      </span>
+                      <span
+                        className={`numeric text-right font-semibold ${index === 0 ? "text-brand" : "text-muted-foreground"}`}
+                      >
+                        {point.digit}
+                      </span>
+                    </div>
+                  ))}
+                {!feed.length && (
+                  <p className="py-6 text-center text-xs text-muted-foreground">
+                    No ticks received yet.
+                  </p>
+                )}
+              </div>
+            </section>
+          </div>
+
+          <aside className="flex min-w-0 flex-col gap-5 dashboard-enter-delay">
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+              <SectionHeading title="Session" note="LIVE RESULTS" />
+              <div
+                className={`mt-4 rounded-md p-4 ${sessionPnl >= 0 ? "bg-positive-soft" : "bg-destructive/10"}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-xs font-bold uppercase tracking-[0.1em] text-muted-foreground">
+                    Net P/L
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className="rounded-sm border-border bg-card font-semibold"
+                  >
+                    {selectedAccount?.currency ?? "USD"}
+                  </Badge>
+                </div>
+                <p
+                  className={`numeric mt-3 text-3xl font-medium ${sessionPnl > 0 ? "text-positive" : sessionPnl < 0 ? "text-destructive" : "text-foreground"}`}
+                >
+                  {formatMoney(sessionPnl, selectedAccount?.currency ?? "USD")}
+                </p>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2.5">
+                <SmallMetric label="Wins" value={String(wins)} positive />
+                <SmallMetric label="Losses" value={String(losses)} />
+                <SmallMetric label="Trades" value={String(trades.length)} />
+                <SmallMetric label="Win rate" value={winRate} />
+              </div>
+            </section>
+
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+              <div className="flex items-center justify-between gap-3">
+                <SectionHeading title="Bot details" note="CURRENT SETUP" />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8"
+                  aria-label="Strategy explanation"
+                  onClick={() =>
+                    showNotice(
+                      "The bot waits for a 0 or 1, trades Over 1, then recovers with Under 8 after a loss.",
+                    )
+                  }
+                >
+                  <ShieldCheck />
+                </Button>
+              </div>
+              <dl className="mt-4 space-y-3.5">
+                <DetailRow label="Status" value={botStatus} />
+                <DetailRow label="Market" value={market.label} />
+                <DetailRow label="Entry trigger" value="Digit 0 or 1" />
+                <DetailRow label="First direction" value="Over 1" />
+                <DetailRow label="After a loss" value="Under 8 until win" />
+                <DetailRow label="Recovery" value={`×${multiplier}`} />
+              </dl>
+              <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-background p-3">
+                <ShieldCheck className="mt-0.5 size-4 shrink-0 text-brand" />
+                <p className="text-xs leading-[1.6] text-muted-foreground">
+                  Bot runs only after you start it. Real accounts require a separate confirmation.
+                </p>
+              </div>
+            </section>
+
+            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+              <SectionHeading title="Preferences" note="DISPLAY" />
+              <div className="mt-3 divide-y divide-border">
+                <SettingRow
+                  label="Trade alerts"
+                  description="In-app result notifications"
+                  checked={notifyEnabled}
+                  onCheckedChange={setNotifyEnabled}
+                />
+                <div className="flex items-center justify-between gap-3 py-3">
+                  <div>
+                    <p className="text-sm font-medium">Appearance</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {isDark ? "Dark" : "Light"} mode
+                    </p>
                   </div>
-                  <p className="numeric mt-3 text-3xl font-medium text-positive">+$26.32 <span className="text-xs font-medium">USD</span></p>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    aria-label="Toggle appearance"
+                    onClick={() => setIsDark(!isDark)}
+                  >
+                    {isDark ? <Sun /> : <Moon />}
+                  </Button>
                 </div>
-                <div className="mt-3 grid grid-cols-2 gap-2.5">
-                  <SmallMetric label="Wins" value="2" positive />
-                  <SmallMetric label="Losses" value="1" />
-                  <SmallMetric label="Trades" value="3" />
-                  <SmallMetric label="Win rate" value="66.7%" />
-                </div>
-              </section>
+              </div>
+            </section>
 
-              <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
-                <div className="flex items-center justify-between gap-3">
-                  <SectionHeading title="Bot details" note="CURRENT SETUP" />
-                  <Button variant="ghost" size="icon" className="size-8" aria-label="About strategy" onClick={() => showNotice("Strategy logic is a visual placeholder until implementation begins.")}><CircleHelp /></Button>
-                </div>
-                <dl className="mt-4 space-y-3.5">
-                  <DetailRow label="Status" value={isRunning ? "Preview active" : "Idle"} />
-                  <DetailRow label="Market" value={symbol.replace(" Index", "")} />
-                  <DetailRow label="Entry trigger" value="Digit 0 or 1" />
-                  <DetailRow label="First direction" value="Over 1" />
-                  <DetailRow label="After a loss" value="Under 8" />
-                  <DetailRow label="Recovery" value={multiplier} />
-                </dl>
-                <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-background p-3">
-                  <ShieldCheck className="mt-0.5 size-4 shrink-0 text-brand" />
-                  <p className="text-xs leading-[1.6] text-muted-foreground">Sample values only. No account is connected and no trades are placed.</p>
-                </div>
-              </section>
+            <p className="px-1 text-[11px] leading-[1.6] text-muted-foreground">
+              Trading involves risk. Start with a demo account and review the stake and risk limits
+              before running the strategy.
+            </p>
+          </aside>
+        </div>
+      </main>
 
-              <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
-                <SectionHeading title="Preferences" note="DISPLAY" />
-                <div className="mt-3 divide-y divide-border">
-                  <SettingRow label="Trade alerts" description="In-app notifications" checked={notifyEnabled} onCheckedChange={setNotifyEnabled} />
-                  <div className="flex items-center justify-between gap-3 py-3">
-                    <div><p className="text-sm font-medium">Appearance</p><p className="mt-0.5 text-xs text-muted-foreground">{isDark ? "Dark" : "Light"} mode</p></div>
-                    <Button variant="outline" size="icon" aria-label="Toggle appearance" onClick={() => setIsDark(!isDark)}>{isDark ? <Sun /> : <Moon />}</Button>
-                  </div>
-                </div>
-              </section>
+      <footer className="border-t border-border">
+        <div className="mx-auto flex max-w-[1760px] flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted-foreground sm:px-6 xl:px-8">
+          <span>
+            OverUnderAuto <span className="mx-1.5">·</span> Live workspace
+          </span>
+          <span className="flex items-center gap-2">
+            <span
+              className={`size-1.5 rounded-full ${selectedAccount ? "bg-positive" : "bg-amber-500"}`}
+            />
+            {selectedAccount
+              ? `Connected to Deriv · ${selectedAccount.accountType}`
+              : feedStatus === "live"
+                ? "Live feed · account not connected"
+                : "Waiting for Deriv market feed"}
+          </span>
+        </div>
+      </footer>
 
-              <p className="px-1 text-[11px] leading-[1.6] text-muted-foreground">Trading involves risk. This interface is a design preview, not financial advice or a connected trading service.</p>
-            </aside>
-          </div>
-        </main>
+      {notice && (
+        <div
+          role="status"
+          className="fixed bottom-4 left-1/2 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-popover px-4 py-3 text-sm text-popover-foreground shadow-lg"
+        >
+          <span className="size-2 shrink-0 rounded-full bg-brand" />
+          {notice}
+          <Button
+            size="icon"
+            variant="ghost"
+            className="-mr-2 size-7"
+            aria-label="Dismiss message"
+            onClick={() => setNotice("")}
+          >
+            <X />
+          </Button>
+        </div>
+      )}
 
-        <footer className="border-t border-border">
-          <div className="mx-auto flex max-w-[1760px] flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted-foreground sm:px-6 xl:px-8">
-            <span>OverUnderAuto <span className="mx-1.5">·</span> Preview workspace</span>
-            <span className="flex items-center gap-2"><span className="size-1.5 rounded-full bg-amber-500" />Not connected to Deriv</span>
-          </div>
-        </footer>
-
-        {notice && (
-          <div role="status" className="fixed bottom-4 left-1/2 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-popover px-4 py-3 text-sm text-popover-foreground shadow-lg">
-            <span className="size-2 shrink-0 rounded-full bg-brand" />{notice}
-            <Button size="icon" variant="ghost" className="-mr-2 size-7" aria-label="Dismiss message" onClick={() => setNotice("")}><X /></Button>
-          </div>
-        )}
-
-        <Dialog open={authView !== null} onOpenChange={(open) => !open && setAuthView(null)}>
-          <DialogContent className="max-w-[420px]">
-            <DialogHeader>
-              <DialogTitle className="text-left">{authView === "signup" ? "Create your account" : "Welcome back"}</DialogTitle>
-              <DialogDescription className="text-left">{authView === "signup" ? "Set up an OverUnderAuto account." : "Sign in to your OverUnderAuto account."}</DialogDescription>
-            </DialogHeader>
-            <form className="mt-3 space-y-4" onSubmit={handleAccountSubmit}>
-              {authView === "signup" && <Field label="Name"><Input placeholder="Your name" autoComplete="name" required /></Field>}
-              <Field label="Email address"><Input type="email" placeholder="you@example.com" autoComplete="email" required /></Field>
-              <Field label="Password"><Input type="password" placeholder="At least 8 characters" autoComplete={authView === "signup" ? "new-password" : "current-password"} minLength={8} required /></Field>
-              <div className="rounded-md bg-muted px-3 py-2.5 text-xs leading-[1.6] text-muted-foreground">Account access is a visual preview. Authentication has not been connected.</div>
-              <Button type="submit" className="w-full">{authView === "signup" ? "Create account" : "Sign in"}</Button>
-              <p className="text-center text-sm text-muted-foreground">
-                {authView === "signup" ? "Already have an account?" : "New to OverUnderAuto?"}{" "}
-                <button type="button" className="font-semibold text-brand underline-offset-4 hover:underline" onClick={() => setAuthView(authView === "signup" ? "signin" : "signup")}>
-                  {authView === "signup" ? "Sign in" : "Create account"}
-                </button>
-              </p>
-            </form>
-          </DialogContent>
-        </Dialog>
-      </div>
+      <AlertDialog open={liveConfirmationOpen} onOpenChange={setLiveConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Start on a real account?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You selected a real Deriv account. The bot will place trades using real funds with a
+              base stake of {formatMoney(Number(stake) || 0, selectedAccount?.currency ?? "USD")}{" "}
+              and the risk limits shown on this page.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setLiveConfirmationOpen(false);
+                void startBot();
+              }}
+            >
+              Start real trading
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
+}
+
+function feedPoint(tick: DerivTick): FeedPoint | null {
+  const quote = Number(tick.quote);
+  const pipSize = tick.pip_size ?? 2;
+  const digit = lastDigit(tick.quote, pipSize);
+  if (!Number.isFinite(quote) || !Number.isFinite(tick.epoch) || digit === null) return null;
+  return { epoch: tick.epoch, quote, pipSize, digit };
+}
+
+function historyPoints(message: DerivMessage): FeedPoint[] {
+  const history = message.history;
+  if (!history || !Array.isArray(history.prices) || !Array.isArray(history.times)) return [];
+  const pipSize = typeof message["pip_size"] === "number" ? message["pip_size"] : 2;
+  return history.prices.flatMap((quote, index) => {
+    const epoch = history.times?.[index];
+    if (epoch === undefined) return [];
+    const point = feedPoint({ quote, epoch, pip_size: pipSize });
+    return point ? [point] : [];
+  });
+}
+
+function makeChartPath(points: FeedPoint[]): string | null {
+  if (points.length < 2) return null;
+  const values = points.map((point) => point.quote);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const spread = max - min || Math.max(Math.abs(max) * 0.0001, 0.0001);
+  return values
+    .map((value, index) => {
+      const x = (index / (values.length - 1)) * 440;
+      const y = 140 - ((value - min) / spread) * 120;
+      return `${index === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
+    })
+    .join(" ");
+}
+
+function chartPathEndY(path: string): number {
+  return Number(path.trim().split(/\s+/).at(-1)) || 20;
+}
+
+function formatQuote(quote: number, pipSize: number): string {
+  return quote.toFixed(Math.max(0, Math.min(12, pipSize)));
+}
+
+function formatTime(epoch: number): string {
+  return new Date(epoch * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function formatMoney(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat("en-US", {
+      style: "currency",
+      currency,
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    }).format(amount);
+  } catch {
+    return `$${amount.toFixed(2)}`;
+  }
 }
 
 function SectionHeading({ title, note }: { title: string; note?: string }) {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
       <h2 className="truncate text-sm font-bold">{title}</h2>
-      {note && <span className="shrink-0 text-[9px] font-bold tracking-[0.1em] text-muted-foreground">{note}</span>}
+      {note && (
+        <span className="shrink-0 text-[9px] font-bold tracking-[0.1em] text-muted-foreground">
+          {note}
+        </span>
+      )}
     </div>
   );
 }
@@ -528,35 +1317,95 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-function Metric({ label, value, detail, tone, status }: { label: string; value: string; detail: string; tone?: "positive"; status?: boolean }) {
+function Metric({
+  label,
+  value,
+  detail,
+  tone,
+  status,
+}: {
+  label: string;
+  value: string;
+  detail: string;
+  tone?: "positive";
+  status?: boolean;
+}) {
   return (
     <section className="min-w-0 rounded-lg border border-border bg-card px-3.5 py-3.5 sm:px-4 sm:py-4">
       <p className="truncate text-xs font-semibold text-muted-foreground">{label}</p>
-      <p className={`mt-2 truncate text-lg font-bold sm:text-xl ${tone === "positive" ? "text-positive numeric" : ""}`}>{status && <span className="mr-2 inline-block size-2 rounded-full bg-amber-500 align-middle" />}{value}</p>
+      <p
+        className={`mt-2 truncate text-lg font-bold sm:text-xl ${tone === "positive" ? "text-positive numeric" : ""}`}
+      >
+        {status && (
+          <span className="mr-2 inline-block size-2 rounded-full bg-positive align-middle" />
+        )}
+        {value}
+      </p>
       <p className="mt-1 truncate text-[11px] text-muted-foreground">{detail}</p>
     </section>
   );
 }
 
-function SmallMetric({ label, value, positive }: { label: string; value: string; positive?: boolean }) {
+function SmallMetric({
+  label,
+  value,
+  positive,
+}: {
+  label: string;
+  value: string;
+  positive?: boolean;
+}) {
   return (
     <div className="min-w-0 rounded-md border border-border bg-background px-3 py-3">
-      <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">{label}</p>
-      <p className={`numeric mt-1 text-xl font-medium ${positive ? "text-positive" : "text-foreground"}`}>{value}</p>
+      <p className="text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+        {label}
+      </p>
+      <p
+        className={`numeric mt-1 text-xl font-medium ${positive ? "text-positive" : "text-foreground"}`}
+      >
+        {value}
+      </p>
     </div>
   );
 }
 
-function RiskInput({ label, enabled, setEnabled, value }: { label: string; enabled: boolean; setEnabled: (value: boolean) => void; value: string }) {
+function RiskInput({
+  label,
+  enabled,
+  setEnabled,
+  value,
+  setValue,
+}: {
+  label: string;
+  enabled: boolean;
+  setEnabled: (value: boolean) => void;
+  value: string;
+  setValue: (value: string) => void;
+}) {
   return (
     <div>
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="text-xs font-semibold">{label}</span>
-        <Switch aria-label={`${label} limit enabled`} checked={enabled} onCheckedChange={setEnabled} />
+        <Switch
+          aria-label={`${label} limit enabled`}
+          checked={enabled}
+          onCheckedChange={setEnabled}
+        />
       </div>
       <div className="relative">
-        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">$</span>
-        <Input className="pl-7 numeric" type="number" min="0" step="0.5" defaultValue={value} aria-label={`${label} amount`} disabled={!enabled} />
+        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">
+          $
+        </span>
+        <Input
+          className="pl-7 numeric"
+          type="number"
+          min="0.01"
+          step="0.5"
+          value={value}
+          onChange={(event) => setValue(event.target.value)}
+          aria-label={`${label} amount`}
+          disabled={!enabled}
+        />
       </div>
     </div>
   );
@@ -571,41 +1420,83 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
-function SettingRow({ label, description, checked, onCheckedChange }: { label: string; description: string; checked: boolean; onCheckedChange: (value: boolean) => void }) {
+function SettingRow({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
   return (
     <div className="flex items-center justify-between gap-3 py-3">
-      <div className="min-w-0"><p className="text-sm font-medium">{label}</p><p className="mt-0.5 text-xs text-muted-foreground">{description}</p></div>
+      <div className="min-w-0">
+        <p className="text-sm font-medium">{label}</p>
+        <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
+      </div>
       <Switch aria-label={label} checked={checked} onCheckedChange={onCheckedChange} />
     </div>
   );
 }
 
-function TradeTable({ history = false }: { history?: boolean }) {
-  const trades = history
-    ? [
-        { run: "#18", time: "20:40:52", entry: "6", target: "Over 1", exit: "—", stake: "$1.50", status: "Preview", pnl: "—" },
-        { run: "#17", time: "20:40:26", entry: "1", target: "Over 1", exit: "2", stake: "$1.00", status: "Sample win", pnl: "+$0.82" },
-        { run: "#16", time: "20:40:04", entry: "0", target: "Over 1", exit: "4", stake: "$1.00", status: "Sample loss", pnl: "−$1.00" },
-      ]
-    : [
-        { run: "#03", time: "20:44:18", entry: "1", target: "Over 1", exit: "—", stake: "$1.00", status: "Preview", pnl: "—" },
-        { run: "#02", time: "20:40:26", entry: "1", target: "Over 1", exit: "2", stake: "$1.00", status: "Sample win", pnl: "+$0.82" },
-        { run: "#01", time: "20:40:04", entry: "0", target: "Over 1", exit: "4", stake: "$1.00", status: "Sample loss", pnl: "−$1.00" },
-      ];
-
+function TradeTable({ trades, history = false }: { trades: StrategyTrade[]; history?: boolean }) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[700px] border-collapse text-left text-xs">
-        <thead><tr className="border-b border-border text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
-          <th className="px-4 py-3 font-semibold sm:px-5">Run</th><th className="px-3 py-3 font-semibold">Time</th><th className="px-3 py-3 font-semibold">Entry</th><th className="px-3 py-3 font-semibold">Contract</th><th className="px-3 py-3 font-semibold">Exit</th><th className="px-3 py-3 font-semibold">Stake</th><th className="px-3 py-3 font-semibold">Status</th><th className="px-4 py-3 text-right font-semibold sm:px-5">P/L</th>
-        </tr></thead>
-        <tbody className="divide-y divide-border">{trades.map((trade) => (
-          <tr key={trade.run} className="hover:bg-muted/40">
-            <td className="numeric px-4 py-3.5 font-medium sm:px-5">{trade.run}</td><td className="numeric px-3 py-3.5 text-muted-foreground">{trade.time}</td><td className="numeric px-3 py-3.5">{trade.entry}</td><td className="px-3 py-3.5">{trade.target}</td><td className="numeric px-3 py-3.5">{trade.exit}</td><td className="numeric px-3 py-3.5">{trade.stake}</td>
-            <td className="px-3 py-3.5"><Badge variant="outline" className={`rounded-sm whitespace-nowrap font-medium ${trade.status === "Sample win" ? "border-positive/30 bg-positive-soft text-positive" : trade.status === "Sample loss" ? "border-destructive/30 text-destructive" : "text-muted-foreground"}`}>{trade.status}</Badge></td>
-            <td className={`numeric px-4 py-3.5 text-right font-semibold sm:px-5 ${trade.pnl.startsWith("+") ? "text-positive" : ""}`}>{trade.pnl}</td>
+        <thead>
+          <tr className="border-b border-border text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+            <th className="px-4 py-3 font-semibold sm:px-5">Run</th>
+            <th className="px-3 py-3 font-semibold">Time</th>
+            <th className="px-3 py-3 font-semibold">Entry</th>
+            <th className="px-3 py-3 font-semibold">Contract</th>
+            <th className="px-3 py-3 font-semibold">Exit</th>
+            <th className="px-3 py-3 font-semibold">Stake</th>
+            <th className="px-3 py-3 font-semibold">Status</th>
+            <th className="px-4 py-3 text-right font-semibold sm:px-5">P/L</th>
           </tr>
-        ))}</tbody>
+        </thead>
+        <tbody className="divide-y divide-border">
+          {trades.length ? (
+            trades.map((trade, index) => (
+              <tr key={trade.id} className="hover:bg-muted/40">
+                <td className="numeric px-4 py-3.5 font-medium sm:px-5">
+                  #{String(trades.length - index).padStart(2, "0")}
+                </td>
+                <td className="numeric px-3 py-3.5 text-muted-foreground">{trade.time}</td>
+                <td className="numeric px-3 py-3.5">{trade.entryDigit}</td>
+                <td className="px-3 py-3.5">{trade.contract}</td>
+                <td className="numeric px-3 py-3.5">{trade.exitDigit}</td>
+                <td className="numeric px-3 py-3.5">${trade.stake.toFixed(2)}</td>
+                <td className="px-3 py-3.5">
+                  <Badge
+                    variant="outline"
+                    className={`whitespace-nowrap rounded-sm font-medium ${trade.status === "Won" ? "border-positive/30 bg-positive-soft text-positive" : trade.status === "Lost" ? "border-destructive/30 text-destructive" : "text-muted-foreground"}`}
+                  >
+                    {trade.status}
+                  </Badge>
+                </td>
+                <td
+                  className={`numeric px-4 py-3.5 text-right font-semibold sm:px-5 ${trade.profit !== null && trade.profit > 0 ? "text-positive" : trade.profit !== null && trade.profit < 0 ? "text-destructive" : ""}`}
+                >
+                  {trade.profit === null
+                    ? "—"
+                    : `${trade.profit > 0 ? "+" : ""}$${trade.profit.toFixed(2)}`}
+                </td>
+              </tr>
+            ))
+          ) : (
+            <tr>
+              <td colSpan={8} className="px-5 py-10 text-center text-sm text-muted-foreground">
+                {history
+                  ? "Settled trades will appear here."
+                  : "Start the bot to record your first trade."}
+              </td>
+            </tr>
+          )}
+        </tbody>
       </table>
     </div>
   );

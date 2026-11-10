@@ -10,33 +10,89 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AuthCallbackRouteImport } from './routes/auth.callback'
+import { Route as ApiDerivOtpRouteImport } from './routes/api.deriv.otp'
+import { Route as ApiDerivSessionRouteImport } from './routes/api.deriv.session'
+import { Route as ApiDerivAuthExchangeRouteImport } from './routes/api.deriv.auth.exchange'
 
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AuthCallbackRoute = AuthCallbackRouteImport.update({
+  id: '/auth/callback',
+  path: '/auth/callback',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDerivOtpRoute = ApiDerivOtpRouteImport.update({
+  id: '/api/deriv/otp',
+  path: '/api/deriv/otp',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDerivSessionRoute = ApiDerivSessionRouteImport.update({
+  id: '/api/deriv/session',
+  path: '/api/deriv/session',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDerivAuthExchangeRoute = ApiDerivAuthExchangeRouteImport.update({
+  id: '/api/deriv/auth/exchange',
+  path: '/api/deriv/auth/exchange',
+  getParentRoute: () => rootRouteImport,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/auth/callback': typeof AuthCallbackRoute
+  '/api/deriv/otp': typeof ApiDerivOtpRoute
+  '/api/deriv/session': typeof ApiDerivSessionRoute
+  '/api/deriv/auth/exchange': typeof ApiDerivAuthExchangeRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/auth/callback': typeof AuthCallbackRoute
+  '/api/deriv/otp': typeof ApiDerivOtpRoute
+  '/api/deriv/session': typeof ApiDerivSessionRoute
+  '/api/deriv/auth/exchange': typeof ApiDerivAuthExchangeRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/auth/callback': typeof AuthCallbackRoute
+  '/api/deriv/otp': typeof ApiDerivOtpRoute
+  '/api/deriv/session': typeof ApiDerivSessionRoute
+  '/api/deriv/auth/exchange': typeof ApiDerivAuthExchangeRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/'
+  fullPaths:
+    | '/'
+    | '/auth/callback'
+    | '/api/deriv/otp'
+    | '/api/deriv/session'
+    | '/api/deriv/auth/exchange'
   fileRoutesByTo: FileRoutesByTo
-  to: '/'
-  id: '__root__' | '/'
+  to:
+    | '/'
+    | '/auth/callback'
+    | '/api/deriv/otp'
+    | '/api/deriv/session'
+    | '/api/deriv/auth/exchange'
+  id:
+    | '__root__'
+    | '/'
+    | '/auth/callback'
+    | '/api/deriv/otp'
+    | '/api/deriv/session'
+    | '/api/deriv/auth/exchange'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AuthCallbackRoute: typeof AuthCallbackRoute
+  ApiDerivOtpRoute: typeof ApiDerivOtpRoute
+  ApiDerivSessionRoute: typeof ApiDerivSessionRoute
+  ApiDerivAuthExchangeRoute: typeof ApiDerivAuthExchangeRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -48,11 +104,43 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/auth/callback': {
+      id: '/auth/callback'
+      path: '/auth/callback'
+      fullPath: '/auth/callback'
+      preLoaderRoute: typeof AuthCallbackRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/deriv/otp': {
+      id: '/api/deriv/otp'
+      path: '/api/deriv/otp'
+      fullPath: '/api/deriv/otp'
+      preLoaderRoute: typeof ApiDerivOtpRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/deriv/session': {
+      id: '/api/deriv/session'
+      path: '/api/deriv/session'
+      fullPath: '/api/deriv/session'
+      preLoaderRoute: typeof ApiDerivSessionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/deriv/auth/exchange': {
+      id: '/api/deriv/auth/exchange'
+      path: '/api/deriv/auth/exchange'
+      fullPath: '/api/deriv/auth/exchange'
+      preLoaderRoute: typeof ApiDerivAuthExchangeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
   }
 }
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AuthCallbackRoute: AuthCallbackRoute,
+  ApiDerivOtpRoute: ApiDerivOtpRoute,
+  ApiDerivSessionRoute: ApiDerivSessionRoute,
+  ApiDerivAuthExchangeRoute: ApiDerivAuthExchangeRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

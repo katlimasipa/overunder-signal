@@ -85,7 +85,10 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "description", content: "OverUnderAuto trading strategy workspace preview." },
       { name: "author", content: "Lovable" },
       { property: "og:title", content: "OverUnderAuto" },
-      { property: "og:description", content: "A clear workspace for digit strategies and risk settings." },
+      {
+        property: "og:description",
+        content: "A clear workspace for digit strategies and risk settings.",
+      },
       { property: "og:type", content: "website" },
       { name: "twitter:card", content: "summary_large_image" },
       { name: "twitter:site", content: "@Lovable" },

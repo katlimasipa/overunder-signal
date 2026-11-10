@@ -14,4 +14,18 @@ describe("App routing", () => {
 
     expect(matches.at(-1)?.routeId).not.toBe(rootRouteId);
   });
+
+  it("registers the OAuth callback and Deriv server endpoints", () => {
+    const router = createRouter({ routeTree, context: { queryClient: new QueryClient() } });
+    const paths = [
+      "/auth/callback",
+      "/api/deriv/session",
+      "/api/deriv/otp",
+      "/api/deriv/auth/exchange",
+    ];
+
+    for (const path of paths) {
+      expect(router.matchRoutes(path).at(-1)?.routeId).not.toBe(rootRouteId);
+    }
+  });
 });

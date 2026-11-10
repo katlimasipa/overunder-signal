@@ -1,50 +1,57 @@
-# OverUnder Signal
+# OverUnderAuto
 
-/skill:impeccable use impeccable design skill and no weird symbols or ai slop, no weird graphics and emojis
+OverUnderAuto is a Deriv digit strategy workspace. It streams live market quotes, connects through Deriv OAuth 2.0, and can run the configured Over/Under strategy on a selected Deriv account.
 
-make sure everything like dropdowns and whatnot match the aesthetic of the website/bot
+## Deriv OAuth setup
 
-signin and sign up shouldn't need authentication
+The public Deriv app ID is configured in `src/lib/deriv-shared.ts`. The OAuth application must be registered as an OAuth 2.0 application with the `trade` scope enabled.
 
-name: OverUnderAuto
+Add this exact callback URL to the allowed redirect URLs in the Deriv developer dashboard:
 
-have some white and blue to it, add any colour to compliment and a dark mode
+```text
+https://overunderauto.vercel.app/auth/callback
+```
 
-Please kindly help to implement this strategy for over under bot
+The callback must match exactly, including the `/auth/callback` path. For local development, add the exact local callback URL shown by the development server as a second allowed redirect URL.
 
-If the last two digit is 1 or last two digit is 0 predict over 1. For example
+Deriv hosts the sign-in and registration screens. The app uses Authorization Code with PKCE, exchanges the code on the server, and keeps the short-lived access token in a Secure, HTTP-only cookie. The browser never receives the access token. Deriv does not issue refresh tokens, so users reconnect after a session expires.
 
-4.551
+## Strategy behavior
 
-4.841
+- The bot waits for a live tick whose last decimal digit is `0` or `1`, then requests an `Over 1` contract.
+- After a losing contract, it requests `Under 8` contracts until one wins, then returns to signal analysis.
+- The selected recovery multiplier is applied to the stake after each consecutive loss.
+- One contract is monitored at a time. Pausing stops new entries and lets an open contract settle.
+- Take-profit and stop-loss limits use the session's realized profit/loss. A proposed recovery stake that would exceed the stop-loss limit is skipped.
+- Demo accounts are the default selection when available. Starting a real account requires a second confirmation.
 
-Trade over 1
+The live public market feed works without connecting an account. Trading requires Deriv OAuth and a selected Deriv account.
 
-But if the trade lost predict under 8 immediately until it wins then return to previous.
+## Local development
 
-Then after winning, it should analyze again.
-
-I should be able to set tp and sl
-
-Please use the attachments I'm going to give you as design inspiration for how I want the app to look. Also, add more tailgate options for at least, by times 1.5 or times 2. And yeah, just make it look and feel as premium as possible. Make sure it works properly. I will give you the Deriv ID for this app. So yeah, please do that for me. Make sure that it works. Make sure it has a login and sign-up. I'm going to use Deriv Auth 2.0. Don't test anything out. I feel like just build the framework for the app first. Focus on the UI, basically. Focus on the UI. Make sure that the UI works, the functionalities. Don't focus too much on... Just put everything in place, and then we will look at the functionalities afterwards. But yeah, just make sure that the app is visible. I can see that it exists. Whether it works or not, we'll put into place. That will be the next step. But don't touch any of the functionalities yet.
-
-This project was built with [Lovable](https://lovable.dev).
-
-## Build with Lovable
-
-Continue developing this project in the [Lovable editor](https://lovable.dev/projects/04977d30-037f-4c8f-bb51-0d2c8a84f048).
-
-- **Ship faster**: describe what you want to build and Lovable handles the code.
-- **Stay in sync**: every change made in Lovable is committed straight to this repository.
-- **Full ownership**: this code is yours. Push to `main` on GitHub and your changes sync back into Lovable, ready for your next prompt.
-
-## Development
-
-Prefer working locally? You need Node.js and npm — [install with nvm](https://github.com/nvm-sh/nvm#installing-and-updating).
+Requirements: Bun and Node.js 22 or newer.
 
 ```sh
-git clone <this-repository-url>
-cd <repository-name>
-npm i
-npm run dev
+bun install --frozen-lockfile
+bun run dev
 ```
+
+Run the checks before deploying:
+
+```sh
+bun run lint
+bun run test
+bun run build
+```
+
+## Deploy on Vercel
+
+The repository is configured for the Vercel TanStack Start preset and Nitro's Vercel runtime. Import the repository into Vercel with the repository root as the project root and the **TanStack Start** framework preset. Vercel detects the build and output settings from the project configuration. Pushes to the connected production branch trigger deployments.
+
+After the first deployment:
+
+1. Confirm the app loads at `https://overunderauto.vercel.app/`.
+2. Confirm the Deriv OAuth application's allowed redirect URL is `https://overunderauto.vercel.app/auth/callback`.
+3. Sign in with Deriv, select a demo account, and confirm live quotes before starting the bot.
+
+Trading involves risk. Review the stake, recovery multiplier, take-profit, and stop-loss settings before starting a session.
