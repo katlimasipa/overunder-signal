@@ -11,7 +11,6 @@ import {
   Moon,
   Pause,
   Play,
-  RotateCcw,
   ShieldCheck,
   Square,
   Sun,
@@ -53,10 +52,16 @@ import {
 import { DERIV_MARKETS, type DerivAccount } from "@/lib/deriv-shared";
 import { lastDigit, type StrategyTrade } from "@/lib/over-under-strategy";
 import {
+  createTradingSession,
+  finishTradingSession,
   loadTradingHistory,
+  MAX_SAVED_SESSIONS,
   MAX_SAVED_TRADES,
   saveTradingHistory,
   tradingHistoryCsv,
+  updateTradingSessionTrade,
+  type TradingSession,
+  type TradingSessionStatus,
 } from "@/lib/trading-history";
 
 export const Route = createFileRoute("/")({
@@ -115,6 +120,7 @@ function Dashboard() {
   const [stopLoss, setStopLoss] = useState("10.00");
   const [notifyEnabled, setNotifyEnabled] = useState(true);
   const [selectedTab, setSelectedTab] = useState("trades");
+  const [selectedTradeSessionId, setSelectedTradeSessionId] = useState<string | null>(null);
   const [chartWindow, setChartWindow] = useState(60);
   const [accounts, setAccounts] = useState<DerivAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("");
@@ -125,6 +131,8 @@ function Dashboard() {
   const [feedStatus, setFeedStatus] = useState<FeedStatus>("connecting");
   const [feed, setFeed] = useState<FeedPoint[]>([]);
   const [trades, setTrades] = useState<StrategyTrade[]>([]);
+  const [sessions, setSessions] = useState<TradingSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [sessionPnl, setSessionPnl] = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
   const [historyReady, setHistoryReady] = useState(false);
@@ -137,6 +145,9 @@ function Dashboard() {
   const publicSocketRef = useRef<DerivSocketClient | null>(null);
   const botSocketRef = useRef<DerivSocketClient | null>(null);
   const botRef = useRef<DerivBot | null>(null);
+  const tradeRecordsRef = useRef<StrategyTrade[]>([]);
+  const sessionRecordsRef = useRef<TradingSession[]>([]);
+  const activeSessionIdRef = useRef<string | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
 
   const selectedAccount =
@@ -148,7 +159,12 @@ function Dashboard() {
     return feed.filter((point) => point.epoch >= cutoff);
   }, [chartWindow, feed]);
   const chartPath = useMemo(() => makeChartPath(visibleChartFeed), [visibleChartFeed]);
-  const completedTrades = trades.filter((trade) => trade.status !== "Open");
+  const displayedSessionId = selectedTradeSessionId ?? currentSessionId;
+  const currentSessionTrades = trades.filter((trade) => trade.sessionId === currentSessionId);
+  const tradeLogTrades = displayedSessionId
+    ? trades.filter((trade) => trade.sessionId === displayedSessionId)
+    : [];
+  const completedTrades = currentSessionTrades.filter((trade) => trade.status !== "Open");
   const wins = completedTrades.filter((trade) => trade.status === "Won").length;
   const losses = completedTrades.filter((trade) => trade.status === "Lost").length;
   const winRate = completedTrades.length
@@ -183,7 +199,11 @@ function Dashboard() {
 
   useEffect(() => {
     const saved = loadTradingHistory();
+    tradeRecordsRef.current = saved.trades;
+    sessionRecordsRef.current = saved.sessions;
     setTrades(saved.trades);
+    setSessions(saved.sessions);
+    setCurrentSessionId(saved.currentSessionId);
     setSessionPnl(saved.sessionPnl);
     setLossStreak(saved.lossStreak);
     setHistoryReady(true);
@@ -191,8 +211,10 @@ function Dashboard() {
 
   useEffect(() => {
     if (!historyReady) return;
-    setHistorySaved(saveTradingHistory({ trades, sessionPnl, lossStreak }));
-  }, [historyReady, trades, sessionPnl, lossStreak]);
+    setHistorySaved(
+      saveTradingHistory({ trades, sessions, currentSessionId, sessionPnl, lossStreak }),
+    );
+  }, [historyReady, trades, sessions, currentSessionId, sessionPnl, lossStreak]);
 
   useEffect(() => {
     const nav = navigator as Navigator & { standalone?: boolean };
@@ -319,6 +341,11 @@ function Dashboard() {
     }
   }
 
+  function closeSession(sessionId: string, status: Exclude<TradingSessionStatus, "running">) {
+    sessionRecordsRef.current = finishTradingSession(sessionRecordsRef.current, sessionId, status);
+    setSessions(sessionRecordsRef.current);
+  }
+
   async function startBot() {
     if (!historyReady) {
       showNotice("Your saved trade history is still loading. Try again in a moment.");
@@ -357,6 +384,7 @@ function Dashboard() {
     }
 
     setBotBusy(true);
+    let createdSessionId: string | null = null;
     try {
       const otpResponse = await fetch("/api/deriv/otp", {
         method: "POST",
@@ -370,6 +398,20 @@ function Dashboard() {
         throw new Error(otpPayload.error ?? "Could not connect to this Deriv account.");
 
       const socket = new DerivSocketClient(otpPayload.url);
+      const newSession = createTradingSession(makeSessionId(), selectedAccount.currency);
+      createdSessionId = newSession.id;
+      activeSessionIdRef.current = newSession.id;
+      sessionRecordsRef.current = [newSession, ...sessionRecordsRef.current].slice(
+        0,
+        MAX_SAVED_SESSIONS,
+      );
+      setSessions(sessionRecordsRef.current);
+      setCurrentSessionId(newSession.id);
+      setSelectedTradeSessionId(null);
+      setSelectedTab("trades");
+      setSessionPnl(0);
+      setLossStreak(0);
+
       const runner = new DerivBot(
         socket,
         {
@@ -380,18 +422,31 @@ function Dashboard() {
           recoveryMultiplier: multiplier,
           takeProfit: takeProfitValue,
           stopLoss: stopLossValue,
-          initialPnl: sessionPnl,
-          initialLossStreak: lossStreak,
+          initialPnl: 0,
+          initialLossStreak: 0,
         },
         {
           onTrade: (trade) => {
-            setTrades((current) => {
-              const index = current.findIndex((existing) => existing.id === trade.id);
-              if (index < 0) return [trade, ...current].slice(0, MAX_SAVED_TRADES);
-              const next = [...current];
-              next[index] = trade;
-              return next;
-            });
+            const sessionTrade = { ...trade, sessionId: newSession.id };
+            const previousTrade = tradeRecordsRef.current.find(
+              (existing) => existing.id === trade.id && existing.sessionId === newSession.id,
+            );
+            const nextTrades = previousTrade
+              ? tradeRecordsRef.current.map((existing) =>
+                  existing.id === trade.id && existing.sessionId === newSession.id
+                    ? sessionTrade
+                    : existing,
+                )
+              : [sessionTrade, ...tradeRecordsRef.current].slice(0, MAX_SAVED_TRADES);
+            tradeRecordsRef.current = nextTrades;
+            setTrades(nextTrades);
+            sessionRecordsRef.current = updateTradingSessionTrade(
+              sessionRecordsRef.current,
+              newSession.id,
+              sessionTrade,
+              previousTrade,
+            );
+            setSessions(sessionRecordsRef.current);
             setHasOpenTrade(trade.status === "Open");
             if (trade.status !== "Open" && notifyEnabled) {
               showNotice(
@@ -406,11 +461,13 @@ function Dashboard() {
           },
           onStop: (reason) => {
             setIsRunning(false);
+            closeSession(newSession.id, "completed");
             showNotice(reason);
             closeBotSocket(runner, socket);
           },
           onError: (error) => {
             setIsRunning(false);
+            closeSession(newSession.id, "interrupted");
             setHasOpenTrade(runner.hasOpenContract);
             showNotice(
               runner.hasOpenContract
@@ -428,6 +485,7 @@ function Dashboard() {
       if (!runner.isActive) setIsRunning(false);
     } catch (error) {
       setIsRunning(false);
+      if (createdSessionId) closeSession(createdSessionId, "failed");
       showNotice(error instanceof Error ? error.message : "Could not start the bot.");
     } finally {
       setBotBusy(false);
@@ -442,6 +500,7 @@ function Dashboard() {
   function pauseBot() {
     const runner = botRef.current;
     runner?.pause();
+    if (activeSessionIdRef.current) closeSession(activeSessionIdRef.current, "paused");
     setIsRunning(false);
     if (runner && !runner.isBusy) closeBotSocket(runner, botSocketRef.current);
     showNotice("Bot paused. An open trade will still be monitored until it settles.");
@@ -450,6 +509,7 @@ function Dashboard() {
   function stopBot() {
     const runner = botRef.current;
     runner?.pause();
+    if (activeSessionIdRef.current) closeSession(activeSessionIdRef.current, "stopped");
     setIsRunning(false);
     if (runner && !runner.isBusy) closeBotSocket(runner, botSocketRef.current);
     showNotice(
@@ -464,18 +524,8 @@ function Dashboard() {
     socket?.close();
     botRef.current = null;
     botSocketRef.current = null;
+    activeSessionIdRef.current = null;
     setHasOpenTrade(false);
-  }
-
-  function resetSession() {
-    if (isRunning || botBusy || hasOpenTrade) {
-      showNotice("Pause the bot and let any open trade finish before resetting the session.");
-      return;
-    }
-    setTrades([]);
-    setSessionPnl(0);
-    setLossStreak(0);
-    showNotice("Saved history cleared on this device.");
   }
 
   async function exportTrades() {
@@ -530,7 +580,7 @@ function Dashboard() {
       }
     >
       <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur-sm">
-        <div className="mx-auto flex h-[68px] max-w-[1760px] items-center justify-between gap-3 px-4 sm:px-6 xl:px-8">
+        <div className="mx-auto flex h-[60px] max-w-[1760px] items-center justify-between gap-3 px-4 sm:px-6 xl:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <a href="#workspace" className="flex min-w-0 items-center gap-3">
               <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
@@ -603,11 +653,11 @@ function Dashboard() {
 
       <main
         id="workspace"
-        className="mx-auto max-w-[1760px] scroll-mt-20 px-4 py-6 sm:px-6 lg:py-8 xl:px-8"
+        className="mx-auto max-w-[1760px] scroll-mt-16 px-3 py-3 sm:px-5 lg:py-4 xl:px-8"
       >
-        <div className="mb-7 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-4 sm:flex sm:flex-wrap sm:items-center sm:justify-between">
+        <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 sm:flex sm:flex-wrap sm:justify-between">
           <div className="min-w-0 dashboard-enter">
-            <div className="mb-2 flex flex-wrap items-center gap-2">
+            <div className="mb-1 flex flex-wrap items-center gap-2">
               <span className="text-xs font-bold uppercase tracking-[0.12em] text-brand">
                 Strategy desk
               </span>
@@ -618,8 +668,8 @@ function Dashboard() {
                 Over / Under
               </Badge>
             </div>
-            <h1 className="text-2xl font-bold leading-tight sm:text-[30px]">Strategy workspace</h1>
-            <p className="mt-1 text-sm text-muted-foreground">
+            <h1 className="text-xl font-bold leading-tight sm:text-2xl">Strategy workspace</h1>
+            <p className="mt-0.5 hidden text-xs text-muted-foreground sm:block">
               Live quotes, real account controls, and clear session limits.
             </p>
           </div>
@@ -653,20 +703,10 @@ function Dashboard() {
                 <span className="sm:hidden">Stop</span>
               </Button>
             )}
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Clear saved history"
-              title="Clear saved history"
-              onClick={resetSession}
-              disabled={isRunning || botBusy || hasOpenTrade}
-            >
-              <RotateCcw />
-            </Button>
           </div>
         </div>
 
-        <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
           <Metric
             label="Session P/L"
             value={formatMoney(sessionPnl, selectedAccount?.currency ?? "USD")}
@@ -687,11 +727,29 @@ function Dashboard() {
           />
         </div>
 
-        <div className="grid gap-5 xl:grid-cols-[minmax(250px,300px)_minmax(0,1fr)_minmax(235px,270px)]">
-          <aside className="flex flex-col gap-5 dashboard-enter">
+        <TradeHistoryPanel
+          selectedTab={selectedTab}
+          onTabChange={setSelectedTab}
+          trades={tradeLogTrades}
+          totalTrades={trades.length}
+          sessions={sessions}
+          currentSessionId={currentSessionId}
+          selectedTradeSessionId={selectedTradeSessionId}
+          onReturnToCurrentSession={() => setSelectedTradeSessionId(null)}
+          onViewSession={(sessionId) => {
+            setSelectedTradeSessionId(sessionId);
+            setSelectedTab("trades");
+          }}
+          historyReady={historyReady}
+          historySaved={historySaved}
+          onExport={() => void exportTrades()}
+        />
+
+        <div className="mt-4 grid gap-3 xl:grid-cols-[minmax(250px,300px)_minmax(0,1fr)_minmax(235px,270px)]">
+          <aside className="flex flex-col gap-3 dashboard-enter">
             <section
               id="account"
-              className="scroll-mt-20 rounded-lg border border-border bg-card p-4 sm:p-5"
+              className="scroll-mt-16 rounded-lg border border-border bg-card p-3 sm:p-4"
             >
               <SectionHeading
                 title="Connection"
@@ -763,7 +821,7 @@ function Dashboard() {
               )}
             </section>
 
-            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+            <section className="rounded-lg border border-border bg-card p-3 sm:p-4">
               <SectionHeading title="Strategy" note="OVER / UNDER" />
               <div className="mt-4 space-y-4">
                 <Field label="Market">
@@ -827,7 +885,10 @@ function Dashboard() {
               </div>
             </section>
 
-            <section id="risk" className="rounded-lg border border-border bg-card p-4 sm:p-5">
+            <section
+              id="risk"
+              className="scroll-mt-16 rounded-lg border border-border bg-card p-3 sm:p-4"
+            >
               <SectionHeading title="Risk limits" note="SESSION GUARDRAILS" />
               <div className="mt-4 space-y-4">
                 <RiskInput
@@ -878,9 +939,9 @@ function Dashboard() {
             </section>
           </aside>
 
-          <div className="flex min-w-0 flex-col gap-5">
-            <div className="grid gap-5 2xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
-              <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-5 dashboard-enter-delay">
+          <div className="flex min-w-0 flex-col gap-3">
+            <div className="grid gap-3 2xl:grid-cols-[minmax(0,1.2fr)_minmax(300px,0.8fr)]">
+              <section className="min-w-0 rounded-lg border border-border bg-card p-3 sm:p-4 dashboard-enter-delay">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <SectionHeading
@@ -957,7 +1018,7 @@ function Dashboard() {
                 </div>
               </section>
 
-              <section className="min-w-0 rounded-lg border border-border bg-card p-4 sm:p-5 dashboard-enter-delay">
+              <section className="min-w-0 rounded-lg border border-border bg-card p-3 sm:p-4 dashboard-enter-delay">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <SectionHeading
@@ -990,7 +1051,7 @@ function Dashboard() {
                   </Select>
                 </div>
                 <div
-                  className="mt-5 h-[158px] w-full"
+                  className="mt-3 h-[128px] w-full"
                   role="img"
                   aria-label="Live market line chart"
                 >
@@ -1034,55 +1095,7 @@ function Dashboard() {
               </section>
             </div>
 
-            <section
-              id="history"
-              className="min-w-0 scroll-mt-20 rounded-lg border border-border bg-card dashboard-enter-delay"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
-                <Tabs value={selectedTab} onValueChange={setSelectedTab}>
-                  <TabsList className="h-9 bg-muted p-1">
-                    <TabsTrigger value="trades" className="h-7 px-3 text-xs">
-                      <LayoutDashboard className="mr-1.5 size-3.5" />
-                      Trade log
-                    </TabsTrigger>
-                    <TabsTrigger value="history" className="h-7 px-3 text-xs">
-                      <History className="mr-1.5 size-3.5" />
-                      History
-                    </TabsTrigger>
-                  </TabsList>
-                </Tabs>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8"
-                  onClick={() => void exportTrades()}
-                >
-                  <Download /> Export log
-                </Button>
-              </div>
-              <p
-                className={`border-b border-border px-4 py-2 text-xs sm:px-5 ${historyReady && !historySaved ? "text-destructive" : "text-muted-foreground"}`}
-                role="status"
-              >
-                {!historyReady
-                  ? "Loading saved history…"
-                  : !historySaved
-                    ? "Could not save history on this device. Export a CSV backup."
-                    : trades.length >= MAX_SAVED_TRADES
-                      ? "History is full at 10,000 trades; oldest records roll off. Export CSV to keep a full copy."
-                      : "History saves on this device. Export a CSV backup to move it elsewhere."}
-              </p>
-              <Tabs value={selectedTab} onValueChange={setSelectedTab}>
-                <TabsContent value="trades" className="m-0">
-                  <TradeTable trades={trades} />
-                </TabsContent>
-                <TabsContent value="history" className="m-0">
-                  <TradeTable trades={completedTrades} history />
-                </TabsContent>
-              </Tabs>
-            </section>
-
-            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+            <section className="rounded-lg border border-border bg-card p-3 sm:p-4">
               <div className="flex items-center justify-between gap-3">
                 <SectionHeading
                   title="Recent ticks"
@@ -1129,8 +1142,8 @@ function Dashboard() {
             </section>
           </div>
 
-          <aside className="flex min-w-0 flex-col gap-5 dashboard-enter-delay">
-            <section className="hidden rounded-lg border border-border bg-card p-4 sm:p-5 xl:block">
+          <aside className="flex min-w-0 flex-col gap-3 dashboard-enter-delay">
+            <section className="hidden rounded-lg border border-border bg-card p-3 sm:p-4 xl:block">
               <SectionHeading title="Session" note="LIVE RESULTS" />
               <div
                 className={`mt-4 rounded-md p-4 ${sessionPnl >= 0 ? "bg-positive-soft" : "bg-destructive/10"}`}
@@ -1160,7 +1173,7 @@ function Dashboard() {
               </div>
             </section>
 
-            <section className="hidden rounded-lg border border-border bg-card p-4 sm:p-5 xl:block">
+            <section className="hidden rounded-lg border border-border bg-card p-3 sm:p-4 xl:block">
               <div className="flex items-center justify-between gap-3">
                 <SectionHeading title="Bot details" note="CURRENT SETUP" />
                 <Button
@@ -1194,7 +1207,7 @@ function Dashboard() {
               </div>
             </section>
 
-            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+            <section className="rounded-lg border border-border bg-card p-3 sm:p-4">
               <SectionHeading title="Trade alerts" />
               <div className="mt-1">
                 <SettingRow
@@ -1315,6 +1328,10 @@ function downloadTradeHistory(file: File, filename: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
+function makeSessionId(): string {
+  return `session-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
 function feedPoint(tick: DerivTick): FeedPoint | null {
   const quote = Number(tick.quote);
   const pipSize = tick.pip_size ?? 2;
@@ -1416,17 +1433,17 @@ function Metric({
   status?: boolean;
 }) {
   return (
-    <section className="min-w-0 rounded-lg border border-border bg-card px-3.5 py-3.5 sm:px-4 sm:py-4">
-      <p className="truncate text-xs font-semibold text-muted-foreground">{label}</p>
+    <section className="min-w-0 rounded-lg border border-border bg-card px-3 py-2.5 sm:px-3.5 sm:py-3">
+      <p className="truncate text-[11px] font-semibold text-muted-foreground">{label}</p>
       <p
-        className={`mt-2 truncate text-lg font-bold sm:text-xl ${tone === "positive" ? "text-positive numeric" : ""}`}
+        className={`mt-1 truncate text-base font-bold sm:text-lg ${tone === "positive" ? "text-positive numeric" : ""}`}
       >
         {status && (
           <span className="mr-2 inline-block size-2 rounded-full bg-positive align-middle" />
         )}
         {value}
       </p>
-      <p className="mt-1 truncate text-[11px] text-muted-foreground">{detail}</p>
+      <p className="mt-0.5 truncate text-[10px] text-muted-foreground">{detail}</p>
     </section>
   );
 }
@@ -1525,6 +1542,198 @@ function SettingRow({
       <Switch aria-label={label} checked={checked} onCheckedChange={onCheckedChange} />
     </div>
   );
+}
+
+function TradeHistoryPanel({
+  selectedTab,
+  onTabChange,
+  trades,
+  totalTrades,
+  sessions,
+  currentSessionId,
+  selectedTradeSessionId,
+  onReturnToCurrentSession,
+  onViewSession,
+  historyReady,
+  historySaved,
+  onExport,
+}: {
+  selectedTab: string;
+  onTabChange: (tab: string) => void;
+  trades: StrategyTrade[];
+  totalTrades: number;
+  sessions: TradingSession[];
+  currentSessionId: string | null;
+  selectedTradeSessionId: string | null;
+  onReturnToCurrentSession: () => void;
+  onViewSession: (sessionId: string) => void;
+  historyReady: boolean;
+  historySaved: boolean;
+  onExport: () => void;
+}) {
+  return (
+    <section
+      id="history"
+      className="min-w-0 scroll-mt-16 rounded-lg border border-border bg-card dashboard-enter-delay"
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4">
+        <Tabs value={selectedTab} onValueChange={onTabChange}>
+          <TabsList className="h-8 bg-muted p-1">
+            <TabsTrigger value="trades" className="h-6 px-2.5 text-xs">
+              <LayoutDashboard className="mr-1.5 size-3.5" /> Trade log
+            </TabsTrigger>
+            <TabsTrigger value="history" className="h-6 px-2.5 text-xs">
+              <History className="mr-1.5 size-3.5" /> Session history
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+        <Button variant="outline" size="sm" className="h-8" onClick={onExport}>
+          <Download /> Export history
+        </Button>
+      </div>
+      <p
+        className={`border-b border-border px-3 py-1.5 text-[11px] sm:px-4 ${historyReady && !historySaved ? "text-destructive" : "text-muted-foreground"}`}
+        role="status"
+      >
+        {!historyReady
+          ? "Loading saved history…"
+          : !historySaved
+            ? "Could not save. Export a CSV backup."
+            : totalTrades >= MAX_SAVED_TRADES
+              ? "10,000 trade limit reached; oldest trades roll off. Export a full backup."
+              : "Saved on this device"}
+      </p>
+      <Tabs value={selectedTab} onValueChange={onTabChange}>
+        <TabsContent value="trades" className="m-0">
+          {selectedTradeSessionId && selectedTradeSessionId !== currentSessionId && (
+            <div className="flex items-center justify-between gap-2 border-b border-border px-3 py-2 sm:px-4">
+              <span className="text-xs text-muted-foreground">Viewing a saved session</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={onReturnToCurrentSession}
+              >
+                Current session
+              </Button>
+            </div>
+          )}
+          <TradeTable
+            trades={trades}
+            history={Boolean(currentSessionId || selectedTradeSessionId)}
+          />
+        </TabsContent>
+        <TabsContent value="history" className="m-0">
+          <SessionHistoryList sessions={sessions} onViewSession={onViewSession} />
+        </TabsContent>
+      </Tabs>
+    </section>
+  );
+}
+
+function SessionHistoryList({
+  sessions,
+  onViewSession,
+}: {
+  sessions: TradingSession[];
+  onViewSession: (sessionId: string) => void;
+}) {
+  const [page, setPage] = useState(0);
+  const pageSize = 12;
+  const pageCount = Math.max(1, Math.ceil(sessions.length / pageSize));
+  const pageIndex = Math.min(page, pageCount - 1);
+  const pageSessions = sessions.slice(pageIndex * pageSize, (pageIndex + 1) * pageSize);
+
+  if (!sessions.length) {
+    return (
+      <p className="px-4 py-6 text-center text-sm text-muted-foreground">
+        Sessions appear here each time you start the bot.
+      </p>
+    );
+  }
+
+  return (
+    <div className="p-2.5 sm:p-3">
+      <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+        {pageSessions.map((session) => (
+          <article
+            key={session.id}
+            className="rounded-md border border-border bg-background px-3 py-2.5"
+          >
+            <div className="flex items-start justify-between gap-2">
+              <div>
+                <p className="text-xs font-semibold">{formatSessionDate(session.startedAt)}</p>
+                <p className="mt-0.5 text-[11px] capitalize text-muted-foreground">
+                  {session.status}
+                </p>
+              </div>
+              <p
+                className={`numeric text-sm font-bold ${session.pnl > 0 ? "text-positive" : session.pnl < 0 ? "text-destructive" : "text-foreground"}`}
+              >
+                {session.pnl > 0 ? "+" : ""}
+                {formatMoney(session.pnl, session.currency)}
+              </p>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-2 border-t border-border pt-2">
+              <p className="text-[11px] text-muted-foreground">
+                {session.tradeCount} trades · {session.wins}W / {session.losses}L
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-[11px]"
+                onClick={() => onViewSession(session.id)}
+              >
+                View log
+              </Button>
+            </div>
+          </article>
+        ))}
+      </div>
+      {pageCount > 1 && (
+        <div className="mt-2 flex items-center justify-between border-t border-border pt-2 text-xs text-muted-foreground">
+          <span>
+            {pageIndex * pageSize + 1}–{Math.min((pageIndex + 1) * pageSize, sessions.length)} of{" "}
+            {sessions.length} sessions
+          </span>
+          <div className="flex gap-1.5">
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2"
+              aria-label="Previous session history page"
+              disabled={pageIndex === 0}
+              onClick={() => setPage((current) => Math.max(0, current - 1))}
+            >
+              Previous
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 px-2"
+              aria-label="Next session history page"
+              disabled={pageIndex === pageCount - 1}
+              onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function formatSessionDate(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleString([], {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
 }
 
 function TradeTable({ trades, history = false }: { trades: StrategyTrade[]; history?: boolean }) {

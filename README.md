@@ -29,7 +29,7 @@ The live public market feed works without connecting an account. Trading require
 
 ## Saved history and mobile app
 
-Trade history, session P/L, and the recovery loss count are saved in this browser on the current device. Up to 10,000 of the most recent trades are retained; older entries roll off at the limit. They remain available after reloads and when the installed app is opened offline, but they do not sync between devices or browsers. Export the trade log as CSV to back it up or move it elsewhere. On phones that support file sharing, the export opens the native share sheet.
+Every time the bot starts, a session is added to Session history with its result and status. The trade log shows the current session; use View log on a saved session to inspect its trades. Trade history and session summaries are saved in this browser on the current device. Up to 10,000 of the most recent trades are retained; older entries roll off at the limit. They remain available after reloads and when the installed app is opened offline, but they do not sync between devices or browsers. Export the trade log as CSV to back it up or move it elsewhere. On phones that support file sharing, the export opens the native share sheet.
 
 The app includes a web app manifest, install icons, and an offline service worker. On Android, install it from the browser's install prompt or menu. On iPhone or iPad, open the site in Safari, tap Share, and choose **Add to Home Screen**. Trading still needs an internet connection and an active Deriv session.
 

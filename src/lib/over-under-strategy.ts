@@ -12,6 +12,7 @@ export interface StrategyTrade {
   contract: string;
   stake: number;
   currency?: string;
+  sessionId?: string;
   status: "Open" | "Won" | "Lost" | "Even";
   profit: number | null;
 }
