@@ -14,6 +14,7 @@ import {
   Pause,
   Play,
   ShieldCheck,
+  Square,
   Sun,
   TrendingUp,
   X,
@@ -145,7 +146,13 @@ function Dashboard() {
       : latestTick?.digit === 0 || latestTick?.digit === 1
         ? "Over 1 · entry"
         : "Waiting for 0 or 1";
-  const botStatus = isRunning ? "Running" : botBusy ? "Finishing open trade" : "Ready";
+  const botStatus = isRunning
+    ? "Running"
+    : hasOpenTrade
+      ? "Finishing open trade"
+      : botBusy
+        ? "Connecting"
+        : "Ready";
 
   function showNotice(message: string) {
     setNotice(message);
@@ -392,6 +399,18 @@ function Dashboard() {
     showNotice("Bot paused. An open trade will still be monitored until it settles.");
   }
 
+  function stopBot() {
+    const runner = botRef.current;
+    runner?.pause();
+    setIsRunning(false);
+    if (runner && !runner.isBusy) closeBotSocket(runner, botSocketRef.current);
+    showNotice(
+      runner?.hasOpenContract
+        ? "Bot stopped. No new trades will open; the current trade will be monitored until it settles."
+        : "Bot stopped.",
+    );
+  }
+
   function closeBotSocket(runner: DerivBot, socket: DerivSocketClient | null) {
     if (botRef.current !== runner || runner.isBusy) return;
     socket?.close();
@@ -630,6 +649,20 @@ function Dashboard() {
                     ? "Trade settling"
                     : "Start bot"}
             </Button>
+            {(isRunning || hasOpenTrade) && (
+              <Button
+                variant="destructive"
+                size="sm"
+                className="h-10 px-3 sm:h-9"
+                aria-label="Stop bot"
+                onClick={stopBot}
+                disabled={botBusy}
+              >
+                <Square />
+                <span className="hidden sm:inline">Stop bot</span>
+                <span className="sm:hidden">Stop</span>
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"
@@ -1139,7 +1172,8 @@ function Dashboard() {
               <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-background p-3">
                 <ShieldCheck className="mt-0.5 size-4 shrink-0 text-brand" />
                 <p className="text-xs leading-[1.6] text-muted-foreground">
-                  Bot runs only after you start it. Real accounts require a separate confirmation.
+                  Bot runs only after you start it. Stop prevents new trades; an open trade stays
+                  monitored until it settles. Real accounts require a separate confirmation.
                 </p>
               </div>
             </section>

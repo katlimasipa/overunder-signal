@@ -8,6 +8,8 @@ class FakeDerivSocket {
   tickHandler: ((tick: DerivTick) => void) | null = null;
   contractHandler: ((contract: Record<string, unknown>) => void) | null = null;
   proposalGate: Promise<DerivMessage> | null = null;
+  forgotten: string[] = [];
+  watchedContractId: number | null = null;
   private contractNumber = 0;
 
   onClose() {
@@ -34,6 +36,7 @@ class FakeDerivSocket {
           id: `proposal-${this.requests.length}`,
           ask_price: payload["amount"] as number,
         },
+        subscription: { id: `proposal-stream-${this.requests.length}` },
       };
     }
     if ("buy" in payload) {
@@ -43,7 +46,12 @@ class FakeDerivSocket {
     return {};
   }
 
-  watchContract(_contractId: string, handler: (contract: Record<string, unknown>) => void) {
+  forget(subscriptionId: string | undefined) {
+    if (subscriptionId) this.forgotten.push(subscriptionId);
+  }
+
+  watchContract(contractId: number, handler: (contract: Record<string, unknown>) => void) {
+    this.watchedContractId = contractId;
     this.contractHandler = handler;
     return () => {
       this.contractHandler = null;
@@ -55,7 +63,13 @@ class FakeDerivSocket {
   }
 
   settle(profit: number) {
-    this.contractHandler?.({ is_sold: 1, profit, exit_tick_display_value: "4.852" });
+    this.contractHandler?.({
+      contract_id: this.watchedContractId,
+      is_sold: 1,
+      status: profit > 0 ? "won" : "lost",
+      profit: String(profit),
+      exit_spot: "4.852",
+    });
   }
 }
 
@@ -99,7 +113,14 @@ describe("Deriv bot", () => {
       () => socket.requests.some((request) => "buy" in request) && socket.contractHandler !== null,
     );
     const firstProposal = socket.requests.find((request) => "proposal" in request);
-    expect(firstProposal).toMatchObject({ contract_type: "DIGITOVER", barrier: "1", amount: 1 });
+    expect(firstProposal).toMatchObject({
+      contract_type: "DIGITOVER",
+      barrier: "1",
+      amount: 1,
+      subscribe: 1,
+    });
+    expect(socket.watchedContractId).toBe(1);
+    expect(socket.forgotten).toContain("proposal-stream-1");
     socket.settle(-1);
     await until(() => !bot.isBusy);
     expect(latestLossStreak).toBe(1);
@@ -132,6 +153,28 @@ describe("Deriv bot", () => {
     expect(nextProposal).toMatchObject({ contract_type: "DIGITOVER", barrier: "1", amount: 1 });
     expect(updates.map((trade) => trade.status)).toEqual(["Open", "Lost", "Open", "Won", "Open"]);
     bot.pause();
+  });
+
+  it("stops opening trades when paused and still records an open trade's settlement", async () => {
+    const socket = new FakeDerivSocket();
+    const statuses: string[] = [];
+    const bot = new DerivBot(socket as unknown as DerivSocketClient, options, {
+      onTrade: (trade) => statuses.push(trade.status),
+      onPnl: vi.fn(),
+      onStop: vi.fn(),
+      onError: vi.fn(),
+    });
+    await bot.start();
+    socket.emitTick(1, "4.551");
+    await until(() => socket.contractHandler !== null);
+
+    bot.pause();
+    socket.emitTick(2, "4.550");
+    socket.settle(0.82);
+    await until(() => !bot.isBusy);
+
+    expect(socket.requests.filter((request) => "buy" in request)).toHaveLength(1);
+    expect(statuses).toEqual(["Open", "Won"]);
   });
 
   it("stops before a stake that would exceed the session stop loss", async () => {
@@ -171,7 +214,10 @@ describe("Deriv bot", () => {
     await until(() => socket.requests.some((request) => "proposal" in request));
 
     bot.pause();
-    resolveProposal({ proposal: { id: "proposal-paused", ask_price: 1 } });
+    resolveProposal({
+      proposal: { id: "proposal-paused", ask_price: 1 },
+      subscription: { id: "proposal-stream-paused" },
+    });
     await until(() => onStop.mock.calls.length > 0);
 
     expect(socket.requests.some((request) => "buy" in request)).toBe(false);

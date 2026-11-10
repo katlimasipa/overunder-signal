@@ -41,12 +41,23 @@ export function stakeForLossStreak(
 
 export function isContractSettled(contract: Record<string, unknown>): boolean {
   const status = String(contract["status"] ?? contract["contract_status"] ?? "").toLowerCase();
-  return (
+  const isSold =
     contract["is_sold"] === true ||
     contract["is_sold"] === 1 ||
+    contract["is_sold"] === "1" ||
+    contract["is_sold"] === "true";
+  const isExpired =
+    contract["is_expired"] === true ||
+    contract["is_expired"] === 1 ||
+    contract["is_expired"] === "1";
+  return (
+    isSold ||
+    isExpired ||
     status === "sold" ||
     status === "won" ||
-    status === "lost"
+    status === "lost" ||
+    status === "expired" ||
+    status === "cancelled"
   );
 }
 

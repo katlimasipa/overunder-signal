@@ -130,19 +130,29 @@ export class DerivSocketClient {
   }
 
   watchContract(
-    contractId: string,
+    contractId: string | number,
     onUpdate: ContractUpdateHandler,
     onError: (error: Error) => void,
   ): () => void {
-    let handlers = this.contractHandlers.get(contractId);
+    const numericContractId = Number(contractId);
+    if (!Number.isSafeInteger(numericContractId) || numericContractId <= 0) {
+      onError(new Error("Deriv returned an invalid contract number."));
+      return () => {};
+    }
+    const contractKey = String(numericContractId);
+    let handlers = this.contractHandlers.get(contractKey);
     if (!handlers) {
       handlers = new Set();
-      this.contractHandlers.set(contractId, handlers);
+      this.contractHandlers.set(contractKey, handlers);
     }
     handlers.add(onUpdate);
     let subscriptionId: string | undefined;
     let removed = false;
-    void this.request({ proposal_open_contract: 1, contract_id: contractId, subscribe: 1 })
+    void this.request({
+      proposal_open_contract: 1,
+      contract_id: numericContractId,
+      subscribe: 1,
+    })
       .then((response) => {
         subscriptionId = response.subscription?.id;
         if (removed && subscriptionId) this.sendForget(subscriptionId);
@@ -156,9 +166,13 @@ export class DerivSocketClient {
     return () => {
       removed = true;
       handlers?.delete(onUpdate);
-      if (handlers?.size === 0) this.contractHandlers.delete(contractId);
+      if (handlers?.size === 0) this.contractHandlers.delete(contractKey);
       if (subscriptionId) this.sendForget(subscriptionId);
     };
+  }
+
+  forget(subscriptionId: string | undefined): void {
+    if (subscriptionId) this.sendForget(subscriptionId);
   }
 
   close(): void {

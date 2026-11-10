@@ -43,6 +43,9 @@ describe("Over / Under strategy", () => {
 
   it("recognizes final contracts and classifies their result", () => {
     expect(isContractSettled({ is_sold: 1 })).toBe(true);
+    expect(isContractSettled({ is_sold: "1", profit: "0.82" })).toBe(true);
+    expect(isContractSettled({ is_expired: 1, status: "open" })).toBe(true);
+    expect(isContractSettled({ status: "won", profit: "0.82" })).toBe(true);
     expect(isContractSettled({ status: "open" })).toBe(false);
     expect(tradeResult(0.82)).toBe("Won");
     expect(tradeResult(-1)).toBe("Lost");

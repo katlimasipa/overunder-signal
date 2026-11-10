@@ -29,7 +29,7 @@ export interface BotCallbacks {
 
 type BotSocket = Pick<
   DerivSocketClient,
-  "request" | "onClose" | "onTick" | "subscribeTicks" | "watchContract"
+  "forget" | "request" | "onClose" | "onTick" | "subscribeTicks" | "watchContract"
 >;
 
 export class DerivBot {
@@ -154,24 +154,40 @@ export class DerivBot {
       duration_unit: "t",
       underlying_symbol: this.options.symbol,
       barrier,
+      subscribe: 1,
     });
     const proposalId = proposalResponse.proposal?.id;
     const askPrice = Number(proposalResponse.proposal?.ask_price);
-    if (typeof proposalId !== "string" || !Number.isFinite(askPrice) || askPrice <= 0) {
+    if (
+      typeof proposalId !== "string" ||
+      !Number.isFinite(askPrice) ||
+      askPrice <= 0 ||
+      !proposalResponse.subscription?.id
+    ) {
+      this.socket.forget(proposalResponse.subscription?.id);
       throw new Error("Deriv did not return a valid contract price.");
     }
 
     if (!this.active) {
+      this.socket.forget(proposalResponse.subscription.id);
       this.busy = false;
       this.callbacks.onStop("Bot paused before the contract was placed.");
       return;
     }
 
-    const buyResponse = await this.socket.request({ buy: proposalId, price: askPrice });
+    let buyResponse: DerivMessage;
+    try {
+      buyResponse = await this.socket.request({ buy: proposalId, price: askPrice });
+    } finally {
+      this.socket.forget(proposalResponse.subscription.id);
+    }
     const contractId = buyResponse.buy?.contract_id;
     if (contractId === undefined || contractId === null)
       throw new Error("Deriv did not confirm the contract purchase.");
-    this.openContractId = String(contractId);
+    const numericContractId = Number(contractId);
+    if (!Number.isSafeInteger(numericContractId) || numericContractId <= 0)
+      throw new Error("Deriv returned an invalid contract number.");
+    this.openContractId = String(numericContractId);
 
     const id = `trade-${Date.now()}-${++this.sequence}`;
     const trade: StrategyTrade = {
@@ -203,7 +219,8 @@ export class DerivBot {
         const status = tradeResult(resolvedProfit);
         this.pnl = Math.round((this.pnl + resolvedProfit) * 100) / 100;
         this.lossStreak = status === "Lost" ? this.lossStreak + 1 : 0;
-        const exitTick = contract["exit_tick_display_value"] ?? contract["exit_tick"];
+        const exitTick =
+          contract["exit_spot"] ?? contract["exit_tick_display_value"] ?? contract["exit_tick"];
         const exitDigit =
           exitTick === undefined || exitTick === null
             ? "—"
@@ -226,16 +243,13 @@ export class DerivBot {
         resolve();
       };
 
-      this.unwatchContract = this.socket.watchContract(String(contractId), finish, (error) => {
+      this.unwatchContract = this.socket.watchContract(numericContractId, finish, (error) => {
         if (settled) return;
         settled = true;
         this.unwatchContract?.();
         this.unwatchContract = null;
         reject(error);
       });
-      const requestState = buyResponse as DerivMessage;
-      if (requestState.error)
-        reject(new Error(requestState.error.message || "Could not monitor the open contract."));
     });
   }
 }
