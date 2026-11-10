@@ -1066,9 +1066,11 @@ function Dashboard() {
               >
                 {!historyReady
                   ? "Loading saved history…"
-                  : historySaved
-                    ? "History saves on this device. Export a CSV backup to move it elsewhere."
-                    : "Could not save history on this device. Export a CSV backup."}
+                  : !historySaved
+                    ? "Could not save history on this device. Export a CSV backup."
+                    : trades.length >= MAX_SAVED_TRADES
+                      ? "History is full at 10,000 trades; oldest records roll off. Export CSV to keep a full copy."
+                      : "History saves on this device. Export a CSV backup to move it elsewhere."}
               </p>
               <Tabs value={selectedTab} onValueChange={setSelectedTab}>
                 <TabsContent value="trades" className="m-0">
