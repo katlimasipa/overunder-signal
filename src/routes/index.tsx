@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
+import { z } from "zod";
 import {
   ArrowUpRight,
   Bell,
@@ -30,6 +31,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DerivCallback } from "@/components/deriv-callback";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -52,6 +54,12 @@ import { DERIV_MARKETS, type DerivAccount } from "@/lib/deriv-shared";
 import { lastDigit, type StrategyTrade } from "@/lib/over-under-strategy";
 
 export const Route = createFileRoute("/")({
+  validateSearch: z.object({
+    code: z.string().optional(),
+    state: z.string().optional(),
+    error: z.string().optional(),
+    error_description: z.string().optional(),
+  }),
   head: () => ({
     meta: [
       { title: "OverUnderAuto — Strategy workspace" },
@@ -68,8 +76,14 @@ export const Route = createFileRoute("/")({
       { name: "twitter:card", content: "summary_large_image" },
     ],
   }),
-  component: Dashboard,
+  component: IndexPage,
 });
+
+function IndexPage() {
+  const search = Route.useSearch();
+  if (search.code || search.error || search.error_description) return <DerivCallback />;
+  return <Dashboard />;
+}
 
 type FeedPoint = { epoch: number; quote: number; pipSize: number; digit: number };
 type FeedStatus = "connecting" | "live" | "reconnecting" | "unavailable";
@@ -510,7 +524,7 @@ function Dashboard() {
                   Sign in
                 </Button>
                 <Button size="sm" onClick={() => void beginDerivAuth("signup")} disabled={authBusy}>
-                  Create account
+                  Create Deriv account
                 </Button>
               </div>
             )}

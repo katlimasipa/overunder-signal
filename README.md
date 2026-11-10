@@ -6,13 +6,13 @@ OverUnderAuto is a Deriv digit strategy workspace. It streams live market quotes
 
 The public Deriv app ID is configured in `src/lib/deriv-shared.ts`. The OAuth application must be registered as an OAuth 2.0 application with the `trade` scope enabled.
 
-Add this exact callback URL to the allowed redirect URLs in the Deriv developer dashboard:
+Add this exact redirect URL to the allowed redirect URLs in the Deriv developer dashboard:
 
 ```text
-https://overunderauto.vercel.app/auth/callback
+https://overunderauto.vercel.app
 ```
 
-The callback must match exactly, including the `/auth/callback` path. For local development, add the exact local callback URL shown by the development server as a second allowed redirect URL.
+Deriv's OAuth application has the site root registered, so the redirect must match exactly and must not include a trailing slash or an extra path. For local development, add the exact local origin shown by the development server as a second allowed redirect URL.
 
 Deriv hosts the sign-in and registration screens. The app uses Authorization Code with PKCE, exchanges the code on the server, and keeps the short-lived access token in a Secure, HTTP-only cookie. The browser never receives the access token. Deriv does not issue refresh tokens, so users reconnect after a session expires.
 
@@ -51,7 +51,7 @@ The repository is configured for the Vercel TanStack Start preset and Nitro's Ve
 After the first deployment:
 
 1. Confirm the app loads at `https://overunderauto.vercel.app/`.
-2. Confirm the Deriv OAuth application's allowed redirect URL is `https://overunderauto.vercel.app/auth/callback`.
+2. Confirm the Deriv OAuth application's allowed redirect URL is `https://overunderauto.vercel.app`.
 3. Sign in with Deriv, select a demo account, and confirm live quotes before starting the bot.
 
 Trading involves risk. Review the stake, recovery multiplier, take-profit, and stop-loss settings before starting a session.

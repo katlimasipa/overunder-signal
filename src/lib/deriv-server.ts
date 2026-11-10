@@ -1,7 +1,7 @@
 import {
   DERIV_API_BASE_URL,
   DERIV_APP_ID,
-  DERIV_CALLBACK_PATH,
+  getRedirectUri,
   type DerivAccount,
 } from "@/lib/deriv-shared";
 
@@ -198,7 +198,7 @@ export function noStoreHeaders(): HeadersInit {
 }
 
 export function expectedRedirectUri(request: Request): string {
-  return new URL(DERIV_CALLBACK_PATH, new URL(request.url).origin).toString();
+  return getRedirectUri(request.url);
 }
 
 export function isValidAccountId(accountId: unknown): accountId is string {

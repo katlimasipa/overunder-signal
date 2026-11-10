@@ -56,21 +56,19 @@ describe("Deriv server helpers", () => {
     });
     expect(requestIsSameOrigin(validRequest)).toBe(true);
     expect(requestIsSameOrigin(invalidRequest)).toBe(false);
-    expect(expectedRedirectUri(validRequest)).toBe(
-      "https://overunderauto.vercel.app/auth/callback",
-    );
+    expect(expectedRedirectUri(validRequest)).toBe("https://overunderauto.vercel.app");
     expect(
       isValidCodeExchangeBody({
         code: "abc",
         verifier: "v".repeat(43),
-        redirectUri: "https://example.com/auth/callback",
+        redirectUri: "https://example.com",
       }),
     ).toBe(true);
     expect(
       isValidCodeExchangeBody({
         code: "abc",
         verifier: "short",
-        redirectUri: "https://example.com/auth/callback",
+        redirectUri: "https://example.com",
       }),
     ).toBe(false);
   });
@@ -92,7 +90,7 @@ describe("Deriv server helpers", () => {
       {
         code: "one-time-code",
         verifier: "v".repeat(43),
-        redirectUri: "https://overunderauto.vercel.app/auth/callback",
+        redirectUri: "https://overunderauto.vercel.app",
       },
       fetcher,
     );

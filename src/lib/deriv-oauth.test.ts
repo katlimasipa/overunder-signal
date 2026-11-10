@@ -25,9 +25,7 @@ describe("Deriv OAuth 2.0 PKCE", () => {
     expect(url.origin).toBe("https://auth.deriv.com");
     expect(url.pathname).toBe("/oauth2/auth");
     expect(url.searchParams.get("client_id")).toBe(DERIV_APP_ID);
-    expect(url.searchParams.get("redirect_uri")).toBe(
-      "https://overunderauto.vercel.app/auth/callback",
-    );
+    expect(url.searchParams.get("redirect_uri")).toBe("https://overunderauto.vercel.app");
     expect(url.searchParams.get("scope")).toBe("trade");
     expect(url.searchParams.get("code_challenge_method")).toBe("S256");
     expect(url.searchParams.get("code_challenge")).toBe(await createPkceChallenge(verifier ?? ""));
@@ -41,5 +39,7 @@ describe("Deriv OAuth 2.0 PKCE", () => {
       await createDerivAuthorizationUrl("signup", "https://overunderauto.vercel.app"),
     );
     expect(url.searchParams.get("prompt")).toBe("registration");
+    expect(url.searchParams.has("name")).toBe(false);
+    expect(url.searchParams.has("first_name")).toBe(false);
   });
 });

@@ -1,5 +1,4 @@
 export const DERIV_APP_ID = "34VjYrOHXYAORMwyfHSoL";
-export const DERIV_CALLBACK_PATH = "/auth/callback";
 export const DERIV_PUBLIC_WS_URL = "wss://api.derivws.com/trading/v1/options/ws/public";
 export const DERIV_API_BASE_URL = "https://api.derivws.com";
 
@@ -26,5 +25,5 @@ export interface DerivAccount {
 }
 
 export function getRedirectUri(origin: string): string {
-  return new URL(DERIV_CALLBACK_PATH, origin).toString();
+  return new URL(origin).origin;
 }
