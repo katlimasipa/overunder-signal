@@ -31,4 +31,4 @@ use the editor.
 
 ## Product implementation rule
 
-- Keep account access and trading controls as clearly labeled, UI-only previews until the user supplies Deriv setup and explicitly requests live integration; never imply that a bot is connected or trading when it is not.
+- Keep the first release as a frontend-only dashboard with local UI state and clearly labeled sample data, because the requested Deriv connection awaits a later setup; never imply that the bot is connected or trading.
