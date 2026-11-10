@@ -201,6 +201,7 @@ export class DerivBot {
       exitDigit: "—",
       contract: label,
       stake,
+      currency: this.options.currency,
       status: "Open",
       profit: null,
     };

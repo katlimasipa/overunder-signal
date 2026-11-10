@@ -3,16 +3,15 @@ import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 import {
   ArrowUpRight,
-  Bell,
   Clock3,
   Disc3,
   Download,
   History,
   LayoutDashboard,
-  Menu,
   Moon,
   Pause,
   Play,
+  RotateCcw,
   ShieldCheck,
   Square,
   Sun,
@@ -53,6 +52,12 @@ import {
 } from "@/lib/deriv-socket";
 import { DERIV_MARKETS, type DerivAccount } from "@/lib/deriv-shared";
 import { lastDigit, type StrategyTrade } from "@/lib/over-under-strategy";
+import {
+  loadTradingHistory,
+  MAX_SAVED_TRADES,
+  saveTradingHistory,
+  tradingHistoryCsv,
+} from "@/lib/trading-history";
 
 export const Route = createFileRoute("/")({
   validateSearch: z.object({
@@ -91,6 +96,11 @@ type FeedStatus = "connecting" | "live" | "reconnecting" | "unavailable";
 
 const recoverySteps = [1, 1.5, 2, 3, 5];
 
+interface InstallPromptEvent extends Event {
+  prompt: () => Promise<void>;
+  userChoice: Promise<{ outcome: "accepted" | "dismissed"; platform: string }>;
+}
+
 function Dashboard() {
   const [isDark, setIsDark] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
@@ -112,12 +122,16 @@ function Dashboard() {
   const [authBusy, setAuthBusy] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [liveConfirmationOpen, setLiveConfirmationOpen] = useState(false);
-  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [feedStatus, setFeedStatus] = useState<FeedStatus>("connecting");
   const [feed, setFeed] = useState<FeedPoint[]>([]);
   const [trades, setTrades] = useState<StrategyTrade[]>([]);
   const [sessionPnl, setSessionPnl] = useState(0);
   const [lossStreak, setLossStreak] = useState(0);
+  const [historyReady, setHistoryReady] = useState(false);
+  const [historySaved, setHistorySaved] = useState(true);
+  const [installPrompt, setInstallPrompt] = useState<InstallPromptEvent | null>(null);
+  const [iosInstallAvailable, setIosInstallAvailable] = useState(false);
+  const [activeMobileSection, setActiveMobileSection] = useState("workspace");
   const [hasOpenTrade, setHasOpenTrade] = useState(false);
   const [notice, setNotice] = useState("");
   const publicSocketRef = useRef<DerivSocketClient | null>(null);
@@ -166,6 +180,36 @@ function Dashboard() {
     },
     [],
   );
+
+  useEffect(() => {
+    const saved = loadTradingHistory();
+    setTrades(saved.trades);
+    setSessionPnl(saved.sessionPnl);
+    setLossStreak(saved.lossStreak);
+    setHistoryReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!historyReady) return;
+    setHistorySaved(saveTradingHistory({ trades, sessionPnl, lossStreak }));
+  }, [historyReady, trades, sessionPnl, lossStreak]);
+
+  useEffect(() => {
+    const nav = navigator as Navigator & { standalone?: boolean };
+    const isStandalone =
+      window.matchMedia("(display-mode: standalone)").matches || nav.standalone === true;
+    const isIos =
+      /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+      (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+    setIosInstallAvailable(isIos && !isStandalone);
+
+    const captureInstallPrompt = (event: Event) => {
+      event.preventDefault();
+      setInstallPrompt(event as InstallPromptEvent);
+    };
+    window.addEventListener("beforeinstallprompt", captureInstallPrompt);
+    return () => window.removeEventListener("beforeinstallprompt", captureInstallPrompt);
+  }, []);
 
   useEffect(() => {
     void fetch("/api/deriv/session", { credentials: "same-origin", cache: "no-store" })
@@ -276,6 +320,10 @@ function Dashboard() {
   }
 
   async function startBot() {
+    if (!historyReady) {
+      showNotice("Your saved trade history is still loading. Try again in a moment.");
+      return;
+    }
     if (!selectedAccount) {
       showNotice("Connect your Deriv account before starting the bot.");
       return;
@@ -339,7 +387,7 @@ function Dashboard() {
           onTrade: (trade) => {
             setTrades((current) => {
               const index = current.findIndex((existing) => existing.id === trade.id);
-              if (index < 0) return [trade, ...current].slice(0, 100);
+              if (index < 0) return [trade, ...current].slice(0, MAX_SAVED_TRADES);
               const next = [...current];
               next[index] = trade;
               return next;
@@ -427,64 +475,70 @@ function Dashboard() {
     setTrades([]);
     setSessionPnl(0);
     setLossStreak(0);
-    showNotice("Session results cleared.");
+    showNotice("Saved history cleared on this device.");
   }
 
-  function exportTrades() {
+  async function exportTrades() {
     if (!trades.length) {
       showNotice("There are no trades to export yet.");
       return;
     }
-    const rows = [
-      ["Time", "Entry digit", "Contract", "Exit digit", "Stake", "Status", "Profit"],
-      ...[...trades]
-        .reverse()
-        .map((trade) => [
-          trade.time,
-          trade.entryDigit,
-          trade.contract,
-          trade.exitDigit,
-          trade.stake,
-          trade.status,
-          trade.profit ?? "",
-        ]),
-    ];
-    const csv = rows
-      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(","))
-      .join("\r\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `overunder-session-${new Date().toISOString().slice(0, 10)}.csv`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+    const filename = `overunder-history-${new Date().toISOString().slice(0, 10)}.csv`;
+    const file = new File([tradingHistoryCsv(trades)], filename, {
+      type: "text/csv;charset=utf-8",
+    });
+    if (navigator.share && navigator.canShare?.({ files: [file] })) {
+      try {
+        await navigator.share({ files: [file], title: "OverUnderAuto trade history" });
+        showNotice("Trade history is ready to save or share.");
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        downloadTradeHistory(file, filename);
+      }
+      return;
+    }
+    downloadTradeHistory(file, filename);
+  }
+
+  async function installApp() {
+    if (installPrompt) {
+      try {
+        await installPrompt.prompt();
+        const choice = await installPrompt.userChoice;
+        setInstallPrompt(null);
+        showNotice(
+          choice.outcome === "accepted"
+            ? "OverUnderAuto is being installed."
+            : "Install dismissed.",
+        );
+      } catch {
+        showNotice("Use your browser menu to install OverUnderAuto.");
+      }
+      return;
+    }
+    if (iosInstallAvailable) {
+      showNotice("Tap Share in Safari, then choose Add to Home Screen.");
+    }
   }
 
   return (
     <div
       className={
         isDark
-          ? "dark min-h-screen bg-background text-foreground"
-          : "min-h-screen bg-background text-foreground"
+          ? "dark min-h-[100dvh] bg-background pb-24 text-foreground lg:pb-0"
+          : "min-h-[100dvh] bg-background pb-24 text-foreground lg:pb-0"
       }
     >
       <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur-sm">
         <div className="mx-auto flex h-[68px] max-w-[1760px] items-center justify-between gap-3 px-4 sm:px-6 xl:px-8">
           <div className="flex min-w-0 items-center gap-3">
-            <Button
-              variant="ghost"
-              size="icon"
-              className="shrink-0 lg:hidden"
-              aria-label="Toggle navigation"
-              onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-            >
-              {isMobileMenuOpen ? <X /> : <Menu />}
-            </Button>
             <a href="#workspace" className="flex min-w-0 items-center gap-3">
               <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
                 <Disc3 className="size-[19px]" strokeWidth={2.25} />
               </span>
-              <span className="truncate text-[15px] font-extrabold">OverUnderAuto</span>
+              <span className="hidden truncate text-[15px] font-extrabold min-[360px]:inline">
+                OverUnderAuto
+              </span>
             </a>
             <span className="hidden h-7 w-px bg-border sm:block" />
             <span className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">
@@ -492,7 +546,7 @@ function Dashboard() {
             </span>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-3">
             <div className="hidden items-center gap-2 rounded-md border border-border bg-card px-3 py-2 sm:flex">
               <span
                 className={`size-2 rounded-full ${feedStatus === "live" ? "bg-positive" : "bg-amber-500"}`}
@@ -501,20 +555,6 @@ function Dashboard() {
                 {feedStatus === "live" ? "Live market feed" : "Connecting feed"}
               </span>
             </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              aria-label="Notifications"
-              onClick={() =>
-                showNotice(
-                  trades.length
-                    ? `${trades.length} session trade${trades.length === 1 ? "" : "s"} recorded.`
-                    : "You’re all caught up.",
-                )
-              }
-            >
-              <Bell />
-            </Button>
             <Button
               variant="outline"
               size="icon"
@@ -559,54 +599,12 @@ function Dashboard() {
             )}
           </div>
         </div>
-        {isMobileMenuOpen && (
-          <nav className="flex flex-col gap-1 border-t border-border bg-background px-4 py-3 lg:hidden">
-            <a
-              className="rounded-md bg-accent px-3 py-2 text-sm font-semibold text-accent-foreground"
-              href="#workspace"
-              onClick={() => setIsMobileMenuOpen(false)}
-            >
-              Strategy workspace
-            </a>
-            <a
-              className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
-              href="#history"
-              onClick={() => setIsMobileMenuOpen(false)}
-            >
-              Trade history
-            </a>
-            <a
-              className="rounded-md px-3 py-2 text-sm text-muted-foreground hover:bg-muted"
-              href="#risk"
-              onClick={() => setIsMobileMenuOpen(false)}
-            >
-              Risk settings
-            </a>
-            {!accounts.length && (
-              <>
-                <Button
-                  variant="ghost"
-                  className="justify-start"
-                  onClick={() => void beginDerivAuth("login")}
-                  disabled={authBusy}
-                >
-                  Sign in with Deriv
-                </Button>
-                <Button
-                  variant="ghost"
-                  className="justify-start"
-                  onClick={() => void beginDerivAuth("signup")}
-                  disabled={authBusy}
-                >
-                  Create a Deriv account
-                </Button>
-              </>
-            )}
-          </nav>
-        )}
       </header>
 
-      <main id="workspace" className="mx-auto max-w-[1760px] px-4 py-6 sm:px-6 lg:py-8 xl:px-8">
+      <main
+        id="workspace"
+        className="mx-auto max-w-[1760px] scroll-mt-20 px-4 py-6 sm:px-6 lg:py-8 xl:px-8"
+      >
         <div className="mb-7 grid grid-cols-[minmax(0,1fr)_auto] items-end gap-4 sm:flex sm:flex-wrap sm:items-center sm:justify-between">
           <div className="min-w-0 dashboard-enter">
             <div className="mb-2 flex flex-wrap items-center gap-2">
@@ -627,18 +625,10 @@ function Dashboard() {
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button
-              variant="outline"
-              size="sm"
-              className="hidden sm:inline-flex"
-              onClick={exportTrades}
-            >
-              <Download /> Export session
-            </Button>
-            <Button
               size="sm"
               className="h-10 px-4 sm:h-9"
               onClick={isRunning ? pauseBot : startRequestedBot}
-              disabled={botBusy || (hasOpenTrade && !isRunning)}
+              disabled={!historyReady || botBusy || (hasOpenTrade && !isRunning)}
             >
               {isRunning ? <Pause /> : <Play />}
               {botBusy
@@ -666,11 +656,12 @@ function Dashboard() {
             <Button
               variant="ghost"
               size="icon"
-              aria-label="Reset session results"
+              aria-label="Clear saved history"
+              title="Clear saved history"
               onClick={resetSession}
               disabled={isRunning || botBusy || hasOpenTrade}
             >
-              <History />
+              <RotateCcw />
             </Button>
           </div>
         </div>
@@ -683,7 +674,7 @@ function Dashboard() {
             {...(sessionPnl > 0 ? { tone: "positive" as const } : {})}
           />
           <Metric label="Win rate" value={winRate} detail={`${wins} wins · ${losses} losses`} />
-          <Metric label="Trades today" value={String(trades.length)} detail="Current session" />
+          <Metric label="Saved trades" value={String(trades.length)} detail="On this device" />
           <Metric
             label="Bot status"
             value={botStatus}
@@ -698,7 +689,10 @@ function Dashboard() {
 
         <div className="grid gap-5 xl:grid-cols-[minmax(250px,300px)_minmax(0,1fr)_minmax(235px,270px)]">
           <aside className="flex flex-col gap-5 dashboard-enter">
-            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+            <section
+              id="account"
+              className="scroll-mt-20 rounded-lg border border-border bg-card p-4 sm:p-5"
+            >
               <SectionHeading
                 title="Connection"
                 note={accounts.length ? "CONNECTED" : "DERIV AUTH 2.0"}
@@ -761,6 +755,11 @@ function Dashboard() {
                 <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
                   Your access token stays in a secure, HTTP-only session cookie.
                 </p>
+              )}
+              {(installPrompt || iosInstallAvailable) && (
+                <Button variant="outline" className="mt-3 w-full" onClick={() => void installApp()}>
+                  <Download /> Install app
+                </Button>
               )}
             </section>
 
@@ -1037,7 +1036,7 @@ function Dashboard() {
 
             <section
               id="history"
-              className="min-w-0 rounded-lg border border-border bg-card dashboard-enter-delay"
+              className="min-w-0 scroll-mt-20 rounded-lg border border-border bg-card dashboard-enter-delay"
             >
               <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
                 <Tabs value={selectedTab} onValueChange={setSelectedTab}>
@@ -1052,10 +1051,25 @@ function Dashboard() {
                     </TabsTrigger>
                   </TabsList>
                 </Tabs>
-                <Button variant="outline" size="sm" className="h-8" onClick={exportTrades}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => void exportTrades()}
+                >
                   <Download /> Export log
                 </Button>
               </div>
+              <p
+                className={`border-b border-border px-4 py-2 text-xs sm:px-5 ${historyReady && !historySaved ? "text-destructive" : "text-muted-foreground"}`}
+                role="status"
+              >
+                {!historyReady
+                  ? "Loading saved history…"
+                  : historySaved
+                    ? "History saves on this device. Export a CSV backup to move it elsewhere."
+                    : "Could not save history on this device. Export a CSV backup."}
+              </p>
               <Tabs value={selectedTab} onValueChange={setSelectedTab}>
                 <TabsContent value="trades" className="m-0">
                   <TradeTable trades={trades} />
@@ -1114,7 +1128,7 @@ function Dashboard() {
           </div>
 
           <aside className="flex min-w-0 flex-col gap-5 dashboard-enter-delay">
-            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+            <section className="hidden rounded-lg border border-border bg-card p-4 sm:p-5 xl:block">
               <SectionHeading title="Session" note="LIVE RESULTS" />
               <div
                 className={`mt-4 rounded-md p-4 ${sessionPnl >= 0 ? "bg-positive-soft" : "bg-destructive/10"}`}
@@ -1144,7 +1158,7 @@ function Dashboard() {
               </div>
             </section>
 
-            <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
+            <section className="hidden rounded-lg border border-border bg-card p-4 sm:p-5 xl:block">
               <div className="flex items-center justify-between gap-3">
                 <SectionHeading title="Bot details" note="CURRENT SETUP" />
                 <Button
@@ -1179,30 +1193,14 @@ function Dashboard() {
             </section>
 
             <section className="rounded-lg border border-border bg-card p-4 sm:p-5">
-              <SectionHeading title="Preferences" note="DISPLAY" />
-              <div className="mt-3 divide-y divide-border">
+              <SectionHeading title="Trade alerts" />
+              <div className="mt-1">
                 <SettingRow
-                  label="Trade alerts"
+                  label="Trade results"
                   description="In-app result notifications"
                   checked={notifyEnabled}
                   onCheckedChange={setNotifyEnabled}
                 />
-                <div className="flex items-center justify-between gap-3 py-3">
-                  <div>
-                    <p className="text-sm font-medium">Appearance</p>
-                    <p className="mt-0.5 text-xs text-muted-foreground">
-                      {isDark ? "Dark" : "Light"} mode
-                    </p>
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    aria-label="Toggle appearance"
-                    onClick={() => setIsDark(!isDark)}
-                  >
-                    {isDark ? <Sun /> : <Moon />}
-                  </Button>
-                </div>
               </div>
             </section>
 
@@ -1214,8 +1212,33 @@ function Dashboard() {
         </div>
       </main>
 
+      <nav
+        aria-label="Main navigation"
+        className="fixed inset-x-0 bottom-0 z-40 border-t border-border bg-background/95 px-2 pt-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] backdrop-blur-sm lg:hidden"
+      >
+        <div className="mx-auto grid max-w-lg grid-cols-4">
+          {[
+            { href: "#workspace", label: "Workspace", icon: LayoutDashboard },
+            { href: "#history", label: "History", icon: History },
+            { href: "#risk", label: "Risk", icon: ShieldCheck },
+            { href: "#account", label: "Account", icon: Disc3 },
+          ].map(({ href, label, icon: Icon }) => (
+            <a
+              key={href}
+              href={href}
+              aria-current={activeMobileSection === href.slice(1) ? "location" : undefined}
+              onClick={() => setActiveMobileSection(href.slice(1))}
+              className={`flex min-h-12 flex-col items-center justify-center gap-1 rounded-md text-[10px] font-medium transition-colors hover:bg-muted focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${activeMobileSection === href.slice(1) ? "text-brand" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              <Icon className="size-4" aria-hidden="true" />
+              {label}
+            </a>
+          ))}
+        </div>
+      </nav>
+
       <footer className="border-t border-border">
-        <div className="mx-auto flex max-w-[1760px] flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted-foreground sm:px-6 xl:px-8">
+        <div className="mx-auto hidden max-w-[1760px] flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted-foreground sm:px-6 lg:flex xl:px-8">
           <span>
             OverUnderAuto <span className="mx-1.5">·</span> Live workspace
           </span>
@@ -1235,7 +1258,7 @@ function Dashboard() {
       {notice && (
         <div
           role="status"
-          className="fixed bottom-4 left-1/2 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-popover px-4 py-3 text-sm text-popover-foreground shadow-lg"
+          className="fixed bottom-20 left-1/2 z-50 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-popover px-4 py-3 text-sm text-popover-foreground shadow-lg lg:bottom-4"
         >
           <span className="size-2 shrink-0 rounded-full bg-brand" />
           {notice}
@@ -1276,6 +1299,18 @@ function Dashboard() {
       </AlertDialog>
     </div>
   );
+}
+
+function downloadTradeHistory(file: File, filename: string) {
+  const url = URL.createObjectURL(file);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.style.display = "none";
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
 function feedPoint(tick: DerivTick): FeedPoint | null {
@@ -1491,61 +1526,143 @@ function SettingRow({
 }
 
 function TradeTable({ trades, history = false }: { trades: StrategyTrade[]; history?: boolean }) {
+  const [page, setPage] = useState(0);
+  const pageSize = 25;
+  const pageCount = Math.max(1, Math.ceil(trades.length / pageSize));
+  const pageIndex = Math.min(page, pageCount - 1);
+  const pageTrades = trades.slice(pageIndex * pageSize, (pageIndex + 1) * pageSize);
+
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[700px] border-collapse text-left text-xs">
-        <thead>
-          <tr className="border-b border-border text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
-            <th className="px-4 py-3 font-semibold sm:px-5">Run</th>
-            <th className="px-3 py-3 font-semibold">Time</th>
-            <th className="px-3 py-3 font-semibold">Entry</th>
-            <th className="px-3 py-3 font-semibold">Contract</th>
-            <th className="px-3 py-3 font-semibold">Exit</th>
-            <th className="px-3 py-3 font-semibold">Stake</th>
-            <th className="px-3 py-3 font-semibold">Status</th>
-            <th className="px-4 py-3 text-right font-semibold sm:px-5">P/L</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border">
-          {trades.length ? (
-            trades.map((trade, index) => (
-              <tr key={trade.id} className="hover:bg-muted/40">
-                <td className="numeric px-4 py-3.5 font-medium sm:px-5">
-                  #{String(trades.length - index).padStart(2, "0")}
-                </td>
-                <td className="numeric px-3 py-3.5 text-muted-foreground">{trade.time}</td>
-                <td className="numeric px-3 py-3.5">{trade.entryDigit}</td>
-                <td className="px-3 py-3.5">{trade.contract}</td>
-                <td className="numeric px-3 py-3.5">{trade.exitDigit}</td>
-                <td className="numeric px-3 py-3.5">${trade.stake.toFixed(2)}</td>
-                <td className="px-3 py-3.5">
-                  <Badge
-                    variant="outline"
-                    className={`whitespace-nowrap rounded-sm font-medium ${trade.status === "Won" ? "border-positive/30 bg-positive-soft text-positive" : trade.status === "Lost" ? "border-destructive/30 text-destructive" : "text-muted-foreground"}`}
-                  >
-                    {trade.status}
-                  </Badge>
-                </td>
-                <td
-                  className={`numeric px-4 py-3.5 text-right font-semibold sm:px-5 ${trade.profit !== null && trade.profit > 0 ? "text-positive" : trade.profit !== null && trade.profit < 0 ? "text-destructive" : ""}`}
+    <div>
+      {!trades.length ? (
+        <p className="px-5 py-10 text-center text-sm text-muted-foreground">
+          {history
+            ? "Settled trades will appear here."
+            : "Start the bot to record your first trade."}
+        </p>
+      ) : (
+        <>
+          <div className="divide-y divide-border md:hidden">
+            {pageTrades.map((trade, index) => {
+              const currency = trade.currency ?? "USD";
+              const run = trades.length - pageIndex * pageSize - index;
+              return (
+                <article key={trade.id} className="space-y-3 px-4 py-4">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold">Run #{String(run).padStart(2, "0")}</p>
+                      <p className="mt-1 numeric text-xs text-muted-foreground">{trade.time}</p>
+                    </div>
+                    <TradeStatus trade={trade} />
+                  </div>
+                  <div className="flex items-end justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold">{trade.contract}</p>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        Entry {trade.entryDigit} <span aria-hidden="true">→</span> Exit{" "}
+                        {trade.exitDigit}
+                      </p>
+                    </div>
+                    <div className="text-right">
+                      <p className="numeric text-sm">{formatMoney(trade.stake, currency)}</p>
+                      <p
+                        className={`numeric mt-1 text-xs font-semibold ${trade.profit !== null && trade.profit > 0 ? "text-positive" : trade.profit !== null && trade.profit < 0 ? "text-destructive" : "text-muted-foreground"}`}
+                      >
+                        {trade.profit === null
+                          ? "P/L —"
+                          : `P/L ${trade.profit > 0 ? "+" : ""}${formatMoney(trade.profit, currency)}`}
+                      </p>
+                    </div>
+                  </div>
+                </article>
+              );
+            })}
+          </div>
+          <div className="hidden overflow-x-auto md:block">
+            <table className="w-full min-w-[700px] border-collapse text-left text-xs">
+              <thead>
+                <tr className="border-b border-border text-[10px] font-bold uppercase tracking-[0.08em] text-muted-foreground">
+                  <th className="px-4 py-3 font-semibold sm:px-5">Run</th>
+                  <th className="px-3 py-3 font-semibold">Time</th>
+                  <th className="px-3 py-3 font-semibold">Entry</th>
+                  <th className="px-3 py-3 font-semibold">Contract</th>
+                  <th className="px-3 py-3 font-semibold">Exit</th>
+                  <th className="px-3 py-3 font-semibold">Stake</th>
+                  <th className="px-3 py-3 font-semibold">Status</th>
+                  <th className="px-4 py-3 text-right font-semibold sm:px-5">P/L</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {pageTrades.map((trade, index) => (
+                  <tr key={trade.id} className="hover:bg-muted/40">
+                    <td className="numeric px-4 py-3.5 font-medium sm:px-5">
+                      #{String(trades.length - pageIndex * pageSize - index).padStart(2, "0")}
+                    </td>
+                    <td className="numeric px-3 py-3.5 text-muted-foreground">{trade.time}</td>
+                    <td className="numeric px-3 py-3.5">{trade.entryDigit}</td>
+                    <td className="px-3 py-3.5">{trade.contract}</td>
+                    <td className="numeric px-3 py-3.5">{trade.exitDigit}</td>
+                    <td className="numeric px-3 py-3.5">
+                      {formatMoney(trade.stake, trade.currency ?? "USD")}
+                    </td>
+                    <td className="px-3 py-3.5">
+                      <TradeStatus trade={trade} />
+                    </td>
+                    <td
+                      className={`numeric px-4 py-3.5 text-right font-semibold sm:px-5 ${trade.profit !== null && trade.profit > 0 ? "text-positive" : trade.profit !== null && trade.profit < 0 ? "text-destructive" : ""}`}
+                    >
+                      {trade.profit === null
+                        ? "—"
+                        : `${trade.profit > 0 ? "+" : ""}${formatMoney(trade.profit, trade.currency ?? "USD")}`}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {pageCount > 1 && (
+            <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3 text-xs text-muted-foreground sm:px-5">
+              <span>
+                {pageIndex * pageSize + 1}–{Math.min((pageIndex + 1) * pageSize, trades.length)} of{" "}
+                {trades.length}
+              </span>
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => setPage((current) => Math.max(0, current - 1))}
+                  disabled={pageIndex === 0}
+                  aria-label="Previous history page"
                 >
-                  {trade.profit === null
-                    ? "—"
-                    : `${trade.profit > 0 ? "+" : ""}$${trade.profit.toFixed(2)}`}
-                </td>
-              </tr>
-            ))
-          ) : (
-            <tr>
-              <td colSpan={8} className="px-5 py-10 text-center text-sm text-muted-foreground">
-                {history
-                  ? "Settled trades will appear here."
-                  : "Start the bot to record your first trade."}
-              </td>
-            </tr>
+                  Previous
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8"
+                  onClick={() => setPage((current) => Math.min(pageCount - 1, current + 1))}
+                  disabled={pageIndex === pageCount - 1}
+                  aria-label="Next history page"
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
           )}
-        </tbody>
-      </table>
+        </>
+      )}
     </div>
+  );
+}
+
+function TradeStatus({ trade }: { trade: StrategyTrade }) {
+  return (
+    <Badge
+      variant="outline"
+      className={`whitespace-nowrap rounded-sm font-medium ${trade.status === "Won" ? "border-positive/30 bg-positive-soft text-positive" : trade.status === "Lost" ? "border-destructive/30 text-destructive" : "text-muted-foreground"}`}
+    >
+      {trade.status}
+    </Badge>
   );
 }

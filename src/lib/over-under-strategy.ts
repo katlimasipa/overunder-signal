@@ -11,6 +11,7 @@ export interface StrategyTrade {
   exitDigit: string;
   contract: string;
   stake: number;
+  currency?: string;
   status: "Open" | "Won" | "Lost" | "Even";
   profit: number | null;
 }

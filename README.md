@@ -27,6 +27,12 @@ Deriv hosts the sign-in and registration screens. The app uses Authorization Cod
 
 The live public market feed works without connecting an account. Trading requires Deriv OAuth and a selected Deriv account.
 
+## Saved history and mobile app
+
+Trade history, session P/L, and the recovery loss count are saved in this browser on the current device. They remain available after reloads and when the installed app is opened offline, but they do not sync between devices or browsers. Export the trade log as CSV to back it up or move it elsewhere. On phones that support file sharing, the export opens the native share sheet.
+
+The app includes a web app manifest, install icons, and an offline service worker. On Android, install it from the browser's install prompt or menu. On iPhone or iPad, open the site in Safari, tap Share, and choose **Add to Home Screen**. Trading still needs an internet connection and an active Deriv session.
+
 ## Local development
 
 Requirements: Bun and Node.js 22 or newer.
