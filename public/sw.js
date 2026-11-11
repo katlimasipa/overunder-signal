@@ -1,4 +1,4 @@
-const VERSION = "overunder-pwa-v1";
+const VERSION = "overunder-pwa-v2";
 const SHELL_CACHE = `${VERSION}-shell`;
 const PAGE_CACHE = `${VERSION}-pages`;
 const ASSET_CACHE = `${VERSION}-assets`;
@@ -6,6 +6,9 @@ const OFFLINE_URL = "/offline.html";
 const PRECACHE_URLS = [
   OFFLINE_URL,
   "/manifest.webmanifest",
+  "/favicon.png",
+  "/brand/overunderauto-logo-on-light.png",
+  "/brand/overunderauto-logo-on-dark.png",
   "/icons/icon-192.png",
   "/icons/icon-512.png",
   "/icons/icon-maskable-512.png",

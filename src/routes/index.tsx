@@ -202,6 +202,11 @@ function Dashboard() {
   );
 
   useEffect(() => {
+    const themeColor = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    themeColor?.setAttribute("content", isDark ? "#111315" : "#f7f8fa");
+  }, [isDark]);
+
+  useEffect(() => {
     const saved = loadTradingHistory();
     tradeRecordsRef.current = saved.trades;
     sessionRecordsRef.current = saved.sessions;
@@ -650,12 +655,14 @@ function Dashboard() {
           <div className="flex min-w-0 items-center gap-3">
             <a href="#workspace" className="flex min-w-0 items-center gap-2.5">
               <img
-                src="/icons/icon-192.png"
-                alt=""
-                aria-hidden="true"
-                className="size-8 shrink-0 rounded-lg object-cover"
+                src={
+                  isDark
+                    ? "/brand/overunderauto-logo-on-dark.png"
+                    : "/brand/overunderauto-logo-on-light.png"
+                }
+                alt="OverUnderAuto"
+                className="h-8 w-auto max-w-[min(46vw,208px)] object-contain object-left"
               />
-              <span className="truncate text-[15px] font-extrabold">OverUnderAuto</span>
             </a>
             <span className="hidden h-7 w-px bg-border sm:block" />
             <span className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">

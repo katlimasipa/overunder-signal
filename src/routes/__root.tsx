@@ -83,7 +83,7 @@ export const Route = createRootRouteWithContext<{ queryClient: QueryClient }>()(
       { name: "viewport", content: "width=device-width, initial-scale=1, viewport-fit=cover" },
       { title: "OverUnderAuto" },
       { name: "description", content: "OverUnderAuto trading strategy workspace preview." },
-      { name: "theme-color", content: "#1769aa" },
+      { name: "theme-color", content: "#f7f8fa" },
       { name: "mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-capable", content: "yes" },
       { name: "apple-mobile-web-app-title", content: "OverUnderAuto" },
