@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
+import darkBrandLogo from "@/assets/overunderauto-logo-dark.png.asset.json";
+import lightBrandLogo from "@/assets/overunderauto-logo-light.png.asset.json";
 import {
   ArrowUpRight,
   Clock3,
@@ -582,13 +584,12 @@ function Dashboard() {
       <header className="sticky top-0 z-30 border-b border-border bg-background/95 backdrop-blur-sm">
         <div className="mx-auto flex h-[60px] max-w-[1760px] items-center justify-between gap-3 px-4 sm:px-6 xl:px-8">
           <div className="flex min-w-0 items-center gap-3">
-            <a href="#workspace" className="flex min-w-0 items-center gap-3">
-              <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary text-primary-foreground">
-                <Disc3 className="size-[19px]" strokeWidth={2.25} />
-              </span>
-              <span className="hidden truncate text-[15px] font-extrabold min-[360px]:inline">
-                OverUnderAuto
-              </span>
+            <a href="#workspace" className="flex min-w-0 items-center">
+              <img
+                src={isDark ? darkBrandLogo.url : lightBrandLogo.url}
+                alt="OverUnderAuto"
+                className="h-8 w-auto max-w-[min(46vw,208px)] object-contain object-left"
+              />
             </a>
             <span className="hidden h-7 w-px bg-border sm:block" />
             <span className="hidden items-center gap-2 text-sm text-muted-foreground sm:flex">
