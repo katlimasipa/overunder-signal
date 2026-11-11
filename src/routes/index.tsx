@@ -1813,23 +1813,36 @@ function SessionHistoryList({
             className="rounded-md border border-border bg-background px-3 py-2.5"
           >
             <div className="flex items-start justify-between gap-2">
-              <div>
+              <div className="min-w-0">
                 <p className="text-xs font-semibold">{formatSessionDate(session.startedAt)}</p>
                 <p className="mt-0.5 text-[11px] capitalize text-muted-foreground">
                   {session.status}
                 </p>
               </div>
-              <p
-                className={`numeric text-sm font-bold ${session.pnl > 0 ? "text-positive" : session.pnl < 0 ? "text-destructive" : "text-foreground"}`}
-              >
-                {session.pnl > 0 ? "+" : ""}
-                {formatMoney(session.pnl, session.currency)}
-              </p>
+              <div className="shrink-0 text-right">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Overall P/L
+                </p>
+                <p
+                  className={`numeric text-sm font-bold ${session.pnl > 0 ? "text-positive" : session.pnl < 0 ? "text-destructive" : "text-foreground"}`}
+                >
+                  {session.pnl > 0 ? "+" : ""}
+                  {formatMoney(session.pnl, session.currency)}
+                </p>
+              </div>
             </div>
             <div className="mt-2 flex items-center justify-between gap-2 border-t border-border pt-2">
-              <p className="text-[11px] text-muted-foreground">
-                {session.tradeCount} trades · {session.wins}W / {session.losses}L
-              </p>
+              <div className="min-w-0 text-[11px] leading-4 text-muted-foreground">
+                <p>
+                  {session.tradeCount} trades · {session.settledCount} settled
+                </p>
+                <p>
+                  {session.wins}W / {session.losses}L · Win ratio{" "}
+                  {session.settledCount
+                    ? `${((session.wins / session.settledCount) * 100).toFixed(1)}%`
+                    : "—"}
+                </p>
+              </div>
               <Button
                 variant="outline"
                 size="sm"
