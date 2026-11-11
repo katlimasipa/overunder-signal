@@ -1305,7 +1305,7 @@ function Dashboard() {
               <div className="mt-3 grid grid-cols-2 gap-2.5">
                 <SmallMetric label="Wins" value={String(wins)} positive />
                 <SmallMetric label="Losses" value={String(losses)} />
-                <SmallMetric label="Trades" value={String(trades.length)} />
+                <SmallMetric label="Trades" value={String(currentSessionTrades.length)} />
                 <SmallMetric label="Win rate" value={winRate} />
               </div>
             </section>
