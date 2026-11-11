@@ -146,7 +146,10 @@ function RootComponent() {
 
   useEffect(() => {
     if (import.meta.env.DEV || !("serviceWorker" in navigator)) return;
-    void navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => undefined);
+    void navigator.serviceWorker
+      .register("/sw.js", { scope: "/" })
+      .then((registration) => registration.update())
+      .catch(() => undefined);
   }, []);
 
   return (

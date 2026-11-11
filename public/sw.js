@@ -1,4 +1,4 @@
-const VERSION = "overunder-pwa-v2";
+const VERSION = "overunder-pwa-v3";
 const SHELL_CACHE = `${VERSION}-shell`;
 const PAGE_CACHE = `${VERSION}-pages`;
 const ASSET_CACHE = `${VERSION}-assets`;
@@ -48,7 +48,7 @@ self.addEventListener("fetch", (event) => {
     event.respondWith(
       (async () => {
         try {
-          const response = await fetch(request);
+          const response = await fetch(request, { cache: "no-cache" });
           if (
             response.ok &&
             url.pathname === "/" &&

@@ -1812,37 +1812,46 @@ function SessionHistoryList({
             key={session.id}
             className="rounded-md border border-border bg-background px-3 py-2.5"
           >
-            <div className="flex items-start justify-between gap-2">
+            <div>
+              <p className="text-xs font-semibold">{formatSessionDate(session.startedAt)}</p>
+              <p className="mt-0.5 text-[11px] capitalize text-muted-foreground">
+                {session.status}
+              </p>
+            </div>
+            <div className="mt-2 grid grid-cols-3 gap-2 border-t border-border pt-2">
               <div className="min-w-0">
-                <p className="text-xs font-semibold">{formatSessionDate(session.startedAt)}</p>
-                <p className="mt-0.5 text-[11px] capitalize text-muted-foreground">
-                  {session.status}
-                </p>
-              </div>
-              <div className="shrink-0 text-right">
                 <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                   Overall P/L
                 </p>
                 <p
-                  className={`numeric text-sm font-bold ${session.pnl > 0 ? "text-positive" : session.pnl < 0 ? "text-destructive" : "text-foreground"}`}
+                  className={`numeric truncate text-sm font-bold ${session.pnl > 0 ? "text-positive" : session.pnl < 0 ? "text-destructive" : "text-foreground"}`}
                 >
                   {session.pnl > 0 ? "+" : ""}
                   {formatMoney(session.pnl, session.currency)}
                 </p>
               </div>
-            </div>
-            <div className="mt-2 flex items-center justify-between gap-2 border-t border-border pt-2">
-              <div className="min-w-0 text-[11px] leading-4 text-muted-foreground">
-                <p>
-                  {session.tradeCount} trades · {session.settledCount} settled
+              <div className="min-w-0">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Trades
                 </p>
-                <p>
-                  {session.wins}W / {session.losses}L · Win ratio{" "}
+                <p className="numeric text-sm font-bold">{session.tradeCount}</p>
+                <p className="text-[10px] text-muted-foreground">{session.settledCount} settled</p>
+              </div>
+              <div className="min-w-0">
+                <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                  Win ratio
+                </p>
+                <p className="numeric text-sm font-bold">
                   {session.settledCount
                     ? `${((session.wins / session.settledCount) * 100).toFixed(1)}%`
                     : "—"}
                 </p>
+                <p className="text-[10px] text-muted-foreground">
+                  {session.wins}W / {session.losses}L
+                </p>
               </div>
+            </div>
+            <div className="mt-2 flex justify-end border-t border-border pt-2">
               <Button
                 variant="outline"
                 size="sm"
