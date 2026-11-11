@@ -743,7 +743,7 @@ function Dashboard() {
         id="workspace"
         className="mx-auto max-w-[1760px] scroll-mt-16 px-3 py-3 sm:px-5 lg:py-4 xl:px-8"
       >
-        <div className="mb-3 grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 sm:flex sm:flex-wrap sm:justify-between">
+        <div className="mb-3 flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-3">
           <div className="min-w-0 dashboard-enter">
             <div className="mb-1 flex flex-wrap items-center gap-2">
               <span className="text-xs font-bold uppercase tracking-[0.12em] text-brand">
@@ -761,10 +761,10 @@ function Dashboard() {
               Live quotes, real account controls, and clear session limits.
             </p>
           </div>
-          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+          <div className="flex w-full flex-wrap items-center justify-start gap-1.5 sm:w-auto sm:justify-end">
             <Button
               size="sm"
-              className="h-10 px-4 sm:h-9"
+              className="h-9 px-3 sm:px-4"
               onClick={isRunning ? pauseBot : startRequestedBot}
               disabled={!historyReady || botBusy || (hasOpenTrade && !isRunning)}
             >
@@ -781,7 +781,7 @@ function Dashboard() {
               <Button
                 variant="destructive"
                 size="sm"
-                className="h-10 px-3 sm:h-9"
+                className="h-9 px-3"
                 aria-label="Stop bot"
                 onClick={stopBot}
                 disabled={botBusy}
@@ -1734,7 +1734,7 @@ function TradeHistoryPanel({
             </TabsTrigger>
           </TabsList>
         </Tabs>
-        <Button variant="outline" size="sm" className="h-8" onClick={onExport}>
+        <Button variant="outline" size="sm" className="ml-auto h-8" onClick={onExport}>
           <Download /> Export history
         </Button>
       </div>
