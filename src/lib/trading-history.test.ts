@@ -119,6 +119,30 @@ describe("trading history storage", () => {
     });
   });
 
+  it("marks an in-progress save interrupted after a reload and preserves saved sessions", () => {
+    const saving = { ...createTradingSession("saving-session", "USD"), status: "saving" as const };
+    const saved = {
+      ...createTradingSession("saved-session", "USD"),
+      status: "saved" as const,
+      endedAt: "2026-01-01T00:01:00.000Z",
+    };
+    const storage = memoryStorage(
+      JSON.stringify({
+        version: 2,
+        trades: [],
+        sessions: [saving, saved],
+        currentSessionId: saving.id,
+        sessionPnl: 0,
+        lossStreak: 0,
+      }),
+    );
+
+    expect(loadTradingHistory(storage).sessions).toMatchObject([
+      { id: saving.id, status: "interrupted", endedAt: expect.any(String) },
+      { id: saved.id, status: "saved", endedAt: saved.endedAt },
+    ]);
+  });
+
   it("keeps per-session totals in sync as a trade settles", () => {
     const session = createTradingSession("session-1", "USD");
     const openTrade = { ...trade, status: "Open" as const, profit: null };
@@ -141,6 +165,7 @@ describe("trading history storage", () => {
     expect(finishTradingSession(withSettledTrade, session.id, "completed")[0]?.status).toBe(
       "completed",
     );
+    expect(finishTradingSession(withSettledTrade, session.id, "saved")[0]?.status).toBe("saved");
   });
 
   it("caps restored and saved trades to the supported history size", () => {

@@ -13,6 +13,8 @@ import {
   Moon,
   Pause,
   Play,
+  RotateCcw,
+  Save,
   ShieldCheck,
   Square,
   Sun,
@@ -150,6 +152,7 @@ function Dashboard() {
   const tradeRecordsRef = useRef<StrategyTrade[]>([]);
   const sessionRecordsRef = useRef<TradingSession[]>([]);
   const activeSessionIdRef = useRef<string | null>(null);
+  const pendingSessionSaveIdRef = useRef<string | null>(null);
   const noticeTimerRef = useRef<number | null>(null);
 
   const selectedAccount =
@@ -161,6 +164,7 @@ function Dashboard() {
     return feed.filter((point) => point.epoch >= cutoff);
   }, [chartWindow, feed]);
   const chartPath = useMemo(() => makeChartPath(visibleChartFeed), [visibleChartFeed]);
+  const currentSession = sessions.find((session) => session.id === currentSessionId) ?? null;
   const displayedSessionId = selectedTradeSessionId ?? currentSessionId;
   const currentSessionTrades = trades.filter((trade) => trade.sessionId === currentSessionId);
   const tradeLogTrades = displayedSessionId
@@ -348,6 +352,55 @@ function Dashboard() {
     setSessions(sessionRecordsRef.current);
   }
 
+  function saveCurrentSession() {
+    if (botBusy) {
+      showNotice("Wait for the bot connection to finish before saving the session.");
+      return;
+    }
+    if (!currentSessionId || !currentSession) {
+      showNotice("There is no session to save yet. Start the bot first.");
+      return;
+    }
+    if (currentSession.status === "saved") {
+      showNotice("This session is already saved in Session history.");
+      return;
+    }
+
+    const runner = botRef.current;
+    if (hasOpenTrade && !runner) {
+      showNotice("The open contract must settle before this session can be saved.");
+      return;
+    }
+    runner?.pause();
+    setIsRunning(false);
+
+    if (runner?.isBusy || hasOpenTrade) {
+      pendingSessionSaveIdRef.current = currentSessionId;
+      closeSession(currentSessionId, "saving");
+      showNotice("Saving after the open contract settles. No new trades will start.");
+      return;
+    }
+
+    closeSession(currentSessionId, "saved");
+    if (runner) closeBotSocket(runner, botSocketRef.current);
+    showNotice("Session saved to Session history.");
+  }
+
+  function resetSession() {
+    if (isRunning || botBusy || hasOpenTrade || pendingSessionSaveIdRef.current) {
+      showNotice("Stop the bot and let any open contract settle before resetting.");
+      return;
+    }
+    if (currentSessionId) {
+      setCurrentSessionId(null);
+    }
+    setSelectedTradeSessionId(null);
+    setSelectedTab("trades");
+    setSessionPnl(0);
+    setLossStreak(0);
+    showNotice("Session reset. Previous sessions remain in Session history.");
+  }
+
   async function startBot() {
     if (!historyReady) {
       showNotice("Your saved trade history is still loading. Try again in a moment.");
@@ -459,16 +512,29 @@ function Dashboard() {
           onPnl: (profit, nextLossStreak) => {
             setSessionPnl(profit);
             setLossStreak(nextLossStreak);
+            if (pendingSessionSaveIdRef.current === newSession.id && !runner.isBusy) {
+              pendingSessionSaveIdRef.current = null;
+              closeSession(newSession.id, "saved");
+              showNotice("Session saved to Session history.");
+            }
             if (!runner.isActive && !runner.isBusy) closeBotSocket(runner, socket);
           },
           onStop: (reason) => {
             setIsRunning(false);
-            closeSession(newSession.id, "completed");
+            if (
+              sessionRecordsRef.current.find((session) => session.id === newSession.id)?.status !==
+              "saved"
+            ) {
+              closeSession(newSession.id, "completed");
+            }
             showNotice(reason);
             closeBotSocket(runner, socket);
           },
           onError: (error) => {
             setIsRunning(false);
+            if (pendingSessionSaveIdRef.current === newSession.id) {
+              pendingSessionSaveIdRef.current = null;
+            }
             closeSession(newSession.id, "interrupted");
             setHasOpenTrade(runner.hasOpenContract);
             showNotice(
@@ -674,7 +740,7 @@ function Dashboard() {
               Live quotes, real account controls, and clear session limits.
             </p>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
             <Button
               size="sm"
               className="h-10 px-4 sm:h-9"
@@ -704,6 +770,36 @@ function Dashboard() {
                 <span className="sm:hidden">Stop</span>
               </Button>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-9 px-2.5"
+              onClick={saveCurrentSession}
+              disabled={
+                !currentSession ||
+                currentSession.status === "saved" ||
+                currentSession.status === "saving" ||
+                botBusy
+              }
+              title="Save this session to Session history"
+            >
+              <Save />
+              {currentSession?.status === "saving"
+                ? "Saving…"
+                : currentSession?.status === "saved"
+                  ? "Saved"
+                  : "Save session"}
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-9 px-2"
+              onClick={resetSession}
+              disabled={!currentSession || isRunning || botBusy || hasOpenTrade}
+              title="Reset the current session and keep it in Session history"
+            >
+              <RotateCcw /> Reset
+            </Button>
           </div>
         </div>
 

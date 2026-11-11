@@ -5,7 +5,7 @@ export const MAX_SAVED_TRADES = 10_000;
 export const MAX_SAVED_SESSIONS = 10_000;
 
 export type TradingSessionStatus =
-  "running" | "paused" | "stopped" | "completed" | "interrupted" | "failed";
+  "running" | "saving" | "saved" | "paused" | "stopped" | "completed" | "interrupted" | "failed";
 
 export interface TradingSession {
   id: string;
@@ -60,9 +60,16 @@ function isSession(value: unknown): value is TradingSession {
     typeof value["id"] === "string" &&
     typeof value["startedAt"] === "string" &&
     (value["endedAt"] === null || typeof value["endedAt"] === "string") &&
-    ["running", "paused", "stopped", "completed", "interrupted", "failed"].includes(
-      String(value["status"]),
-    ) &&
+    [
+      "running",
+      "saving",
+      "saved",
+      "paused",
+      "stopped",
+      "completed",
+      "interrupted",
+      "failed",
+    ].includes(String(value["status"])) &&
     typeof value["currency"] === "string" &&
     Number.isInteger(value["tradeCount"]) &&
     Number.isInteger(value["settledCount"]) &&
@@ -139,7 +146,7 @@ export function loadTradingHistory(storage = browserStorage()): SavedTradingHist
       .filter(isSession)
       .slice(0, MAX_SAVED_SESSIONS)
       .map((session) =>
-        session.status === "running"
+        session.status === "running" || session.status === "saving"
           ? { ...session, status: "interrupted" as const, endedAt: new Date().toISOString() }
           : session,
       );
