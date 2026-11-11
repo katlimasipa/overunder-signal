@@ -16,6 +16,7 @@ export interface BotOptions {
   recoveryMultiplier: number;
   takeProfit: number | null;
   stopLoss: number | null;
+  waitForFailedCycle?: boolean;
   initialPnl?: number;
   initialLossStreak?: number;
 }
@@ -39,6 +40,7 @@ export class DerivBot {
   private pnl: number;
   private lossStreak: number;
   private lastEpoch: number | null = null;
+  private overOneFailurePrimed = false;
   private removeTickListener: (() => void) | null = null;
   private removeCloseListener: (() => void) | null = null;
   private forgetTicks: (() => void) | null = null;
@@ -100,6 +102,22 @@ export class DerivBot {
     this.lastEpoch = tick.epoch;
     const digit = lastDigit(tick.quote, tick.pip_size ?? 2);
     if (digit === null) return;
+
+    if (this.options.waitForFailedCycle) {
+      if (this.lossStreak > 0) {
+        this.overOneFailurePrimed = false;
+        if (digit !== 8 && digit !== 9) return;
+      } else {
+        const isOverOneFailureDigit = digit === 0 || digit === 1;
+        const failedCycleConfirmed = this.overOneFailurePrimed && isOverOneFailureDigit;
+        this.overOneFailurePrimed = isOverOneFailureDigit;
+        if (!failedCycleConfirmed) return;
+
+        // The confirming tick starts the live trade; require a fresh pair after it settles.
+        this.overOneFailurePrimed = false;
+      }
+    }
+
     const signal = signalForDigit(digit, this.lossStreak);
     if (!signal) return;
 

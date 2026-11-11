@@ -116,6 +116,7 @@ function Dashboard() {
   const [stake, setStake] = useState("1.00");
   const [duration, setDuration] = useState("1");
   const [multiplier, setMultiplier] = useState(1.5);
+  const [waitForFailedCycle, setWaitForFailedCycle] = useState(false);
   const [takeProfitEnabled, setTakeProfitEnabled] = useState(true);
   const [takeProfit, setTakeProfit] = useState("25.00");
   const [stopLossEnabled, setStopLossEnabled] = useState(true);
@@ -174,10 +175,22 @@ function Dashboard() {
   const winRate = completedTrades.length
     ? `${((wins / completedTrades.length) * 100).toFixed(1)}%`
     : "—";
-  const currentSignal =
-    lossStreak > 0
+  const previousDigit = feed.at(-2)?.digit;
+  const isLowDigit = latestTick?.digit === 0 || latestTick?.digit === 1;
+  const previousWasLowDigit = previousDigit === 0 || previousDigit === 1;
+  const currentSignal = waitForFailedCycle
+    ? lossStreak > 0
+      ? latestTick?.digit === 8 || latestTick?.digit === 9
+        ? "Under 8 · failed cycle"
+        : "Waiting for 8 or 9"
+      : isLowDigit
+        ? previousWasLowDigit
+          ? "Over 1 · failure confirmed"
+          : "Confirming failed cycle"
+        : "Waiting for 0 or 1"
+    : lossStreak > 0
       ? "Under 8 · recovery"
-      : latestTick?.digit === 0 || latestTick?.digit === 1
+      : isLowDigit
         ? "Over 1 · entry"
         : "Waiting for 0 or 1";
   const botStatus = isRunning
@@ -480,6 +493,7 @@ function Dashboard() {
           recoveryMultiplier: multiplier,
           takeProfit: takeProfitValue,
           stopLoss: stopLossValue,
+          waitForFailedCycle,
           initialPnl: 0,
           initialLossStreak: 0,
         },
@@ -973,17 +987,36 @@ function Dashboard() {
                     </Select>
                   </Field>
                 </div>
+                <SettingRow
+                  label="Wait for failed cycle"
+                  description={
+                    waitForFailedCycle
+                      ? "Wait for a failed Over 1 or Under 8 setup before each entry."
+                      : "Off — trade when the regular strategy signal appears."
+                  }
+                  checked={waitForFailedCycle}
+                  onCheckedChange={setWaitForFailedCycle}
+                  disabled={isRunning || botBusy || hasOpenTrade}
+                />
                 <div className="rounded-md bg-brand-soft p-3">
                   <p className="text-xs font-bold uppercase tracking-[0.08em] text-brand">
                     Entry rule
                   </p>
                   <p className="mt-1.5 text-sm leading-5">
-                    When the latest digit is <span className="numeric font-semibold">0</span> or{" "}
-                    <span className="numeric font-semibold">1</span>, place{" "}
-                    <span className="font-bold text-brand">Over 1</span>.
+                    {waitForFailedCycle ? (
+                      "Wait for two consecutive 0 or 1 ticks before placing Over 1."
+                    ) : (
+                      <>
+                        When the latest digit is <span className="numeric font-semibold">0</span> or{" "}
+                        <span className="numeric font-semibold">1</span>, place{" "}
+                        <span className="font-bold text-brand">Over 1</span>.
+                      </>
+                    )}
                   </p>
                   <p className="mt-2 text-xs leading-[1.6] text-muted-foreground">
-                    After a loss, use Under 8 until it wins, then resume analysis.
+                    {waitForFailedCycle
+                      ? "After a loss, wait for an 8 or 9 before each Under 8 recovery."
+                      : "After a loss, use Under 8 until it wins, then resume analysis."}
                   </p>
                 </div>
               </div>
@@ -1287,7 +1320,9 @@ function Dashboard() {
                   aria-label="Strategy explanation"
                   onClick={() =>
                     showNotice(
-                      "The bot waits for a 0 or 1, trades Over 1, then recovers with Under 8 after a loss.",
+                      waitForFailedCycle
+                        ? "The bot waits for two consecutive 0/1 ticks before Over 1, and waits for 8 or 9 before each Under 8 recovery, until a session limit is reached."
+                        : "The bot waits for a 0 or 1, trades Over 1, then recovers with Under 8 after a loss.",
                     )
                   }
                 >
@@ -1300,6 +1335,7 @@ function Dashboard() {
                 <DetailRow label="Entry trigger" value="Digit 0 or 1" />
                 <DetailRow label="First direction" value="Over 1" />
                 <DetailRow label="After a loss" value="Under 8 until win" />
+                <DetailRow label="Failed-cycle filter" value={waitForFailedCycle ? "On" : "Off"} />
                 <DetailRow label="Recovery" value={`×${multiplier}`} />
               </dl>
               <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-background p-3">
@@ -1631,11 +1667,13 @@ function SettingRow({
   description,
   checked,
   onCheckedChange,
+  disabled = false,
 }: {
   label: string;
   description: string;
   checked: boolean;
   onCheckedChange: (value: boolean) => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex items-center justify-between gap-3 py-3">
@@ -1643,7 +1681,12 @@ function SettingRow({
         <p className="text-sm font-medium">{label}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
       </div>
-      <Switch aria-label={label} checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch
+        aria-label={label}
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        disabled={disabled}
+      />
     </div>
   );
 }

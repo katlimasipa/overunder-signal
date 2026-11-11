@@ -155,6 +155,133 @@ describe("Deriv bot", () => {
     bot.pause();
   });
 
+  it("waits for two consecutive zero/one ticks before each Over 1 trade", async () => {
+    const socket = new FakeDerivSocket();
+    const bot = new DerivBot(
+      socket as unknown as DerivSocketClient,
+      { ...options, waitForFailedCycle: true },
+      { onTrade: vi.fn(), onPnl: vi.fn(), onStop: vi.fn(), onError: vi.fn() },
+    );
+    await bot.start();
+
+    socket.emitTick(1, "4.551"); // First low digit starts the observed cycle.
+    socket.emitTick(2, "4.552"); // A non-low digit means the Over 1 cycle did not fail.
+    socket.emitTick(3, "4.550");
+    expect(socket.requests.filter((request) => "proposal" in request)).toHaveLength(0);
+
+    socket.emitTick(4, "4.551");
+    await until(() => socket.contractHandler !== null);
+    expect(socket.requests.find((request) => "proposal" in request)).toMatchObject({
+      contract_type: "DIGITOVER",
+      barrier: "1",
+    });
+    socket.settle(0.8);
+    await until(() => !bot.isBusy);
+
+    socket.emitTick(5, "4.551");
+    socket.emitTick(6, "4.552");
+    socket.emitTick(7, "4.550");
+    expect(socket.requests.filter((request) => "proposal" in request)).toHaveLength(1);
+    socket.emitTick(8, "4.550");
+    await until(
+      () =>
+        socket.requests.filter((request) => "proposal" in request).length === 2 &&
+        socket.contractHandler !== null,
+    );
+    expect(socket.requests.filter((request) => "proposal" in request)[1]).toMatchObject({
+      contract_type: "DIGITOVER",
+      barrier: "1",
+    });
+    socket.settle(0.8);
+    await until(() => !bot.isBusy);
+    bot.pause();
+  });
+
+  it("waits for an eight or nine before each Under 8 recovery trade", async () => {
+    const socket = new FakeDerivSocket();
+    const bot = new DerivBot(
+      socket as unknown as DerivSocketClient,
+      { ...options, waitForFailedCycle: true, initialLossStreak: 1 },
+      { onTrade: vi.fn(), onPnl: vi.fn(), onStop: vi.fn(), onError: vi.fn() },
+    );
+    await bot.start();
+
+    socket.emitTick(1, "4.857");
+    expect(socket.requests.filter((request) => "proposal" in request)).toHaveLength(0);
+    socket.emitTick(2, "4.858");
+    await until(() => socket.contractHandler !== null);
+    expect(socket.requests.filter((request) => "proposal" in request)[0]).toMatchObject({
+      contract_type: "DIGITUNDER",
+      barrier: "8",
+      amount: 1.5,
+    });
+
+    socket.settle(-1.5);
+    await until(() => !bot.isBusy);
+    socket.emitTick(3, "4.857");
+    expect(socket.requests.filter((request) => "proposal" in request)).toHaveLength(1);
+    socket.emitTick(4, "4.859");
+    await until(
+      () =>
+        socket.requests.filter((request) => "proposal" in request).length === 2 &&
+        socket.contractHandler !== null,
+    );
+    expect(socket.requests.filter((request) => "proposal" in request)[1]).toMatchObject({
+      contract_type: "DIGITUNDER",
+      barrier: "8",
+      amount: 2.25,
+    });
+    socket.settle(0.8);
+    await until(() => !bot.isBusy);
+    bot.pause();
+  });
+
+  it("keeps take-profit enforcement active with the failed-cycle filter", async () => {
+    const socket = new FakeDerivSocket();
+    const onStop = vi.fn();
+    const bot = new DerivBot(
+      socket as unknown as DerivSocketClient,
+      { ...options, waitForFailedCycle: true, takeProfit: 0.5 },
+      { onTrade: vi.fn(), onPnl: vi.fn(), onStop, onError: vi.fn() },
+    );
+    await bot.start();
+
+    socket.emitTick(1, "4.550");
+    socket.emitTick(2, "4.551");
+    await until(() => socket.contractHandler !== null);
+    socket.settle(0.8);
+    await until(() => !bot.isBusy);
+
+    expect(bot.isActive).toBe(false);
+    expect(onStop).toHaveBeenCalledWith("Your take profit limit has been reached.");
+  });
+
+  it("keeps stop-loss enforcement active with the failed-cycle filter", async () => {
+    const socket = new FakeDerivSocket();
+    const onStop = vi.fn();
+    const bot = new DerivBot(
+      socket as unknown as DerivSocketClient,
+      {
+        ...options,
+        baseStake: 0.5,
+        takeProfit: null,
+        stopLoss: 0.5,
+        waitForFailedCycle: true,
+      },
+      { onTrade: vi.fn(), onPnl: vi.fn(), onStop, onError: vi.fn() },
+    );
+    await bot.start();
+
+    socket.emitTick(1, "4.550");
+    socket.emitTick(2, "4.551");
+    await until(() => socket.contractHandler !== null);
+    socket.settle(-0.5);
+    await until(() => !bot.isBusy);
+
+    expect(bot.isActive).toBe(false);
+    expect(onStop).toHaveBeenCalledWith("Your stop loss limit has been reached.");
+  });
+
   it("stops opening trades when paused and still records an open trade's settlement", async () => {
     const socket = new FakeDerivSocket();
     const statuses: string[] = [];
