@@ -1393,11 +1393,16 @@ function Dashboard() {
       </nav>
 
       <footer className="border-t border-border">
-        <div className="mx-auto hidden max-w-[1760px] flex-wrap items-center justify-between gap-2 px-4 py-4 text-xs text-muted-foreground sm:px-6 lg:flex xl:px-8">
-          <span>
-            OverUnderAuto <span className="mx-1.5">·</span> Live workspace
-          </span>
-          <span className="flex items-center gap-2">
+        <div className="mx-auto flex max-w-[1760px] flex-wrap items-center justify-between gap-2 px-4 py-3 text-xs text-muted-foreground sm:px-6 lg:py-4 xl:px-8">
+          <a
+            href="https://architeq.co.za"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline-offset-4 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            Built by Architeq Web Agency
+          </a>
+          <span className="hidden items-center gap-2 lg:flex">
             <span
               className={`size-1.5 rounded-full ${selectedAccount ? "bg-positive" : "bg-amber-500"}`}
             />
