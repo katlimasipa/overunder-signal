@@ -34,7 +34,7 @@ const trade: StrategyTrade = {
 };
 
 describe("trading history storage", () => {
-  it("saves and restores trades and session risk state", () => {
+  it("saves prior session history without restoring its cycle as current", () => {
     const storage = memoryStorage();
     const session = { ...createTradingSession("session-1", "USD"), status: "completed" as const };
     session.endedAt = "2026-01-01T00:01:00.000Z";
@@ -57,8 +57,8 @@ describe("trading history storage", () => {
     expect(loadTradingHistory(storage)).toEqual({
       trades: [{ ...trade, sessionId: session.id }],
       sessions: [session],
-      currentSessionId: session.id,
-      sessionPnl: 2.5,
+      currentSessionId: null,
+      sessionPnl: 0,
       lossStreak: 0,
     });
   });
@@ -98,7 +98,8 @@ describe("trading history storage", () => {
       wins: 1,
       pnl: 0.95,
     });
-    expect(loaded.trades[0]?.sessionId).toBe(loaded.currentSessionId);
+    expect(loaded.currentSessionId).toBeNull();
+    expect(loaded.trades[0]?.sessionId).toBe(loaded.sessions[0]?.id);
   });
 
   it("marks a session interrupted if the app closed while it was running", () => {
