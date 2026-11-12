@@ -34,7 +34,7 @@ const trade: StrategyTrade = {
 };
 
 describe("trading history storage", () => {
-  it("saves and restores trades and session risk state", () => {
+  it("saves prior session history without restoring its cycle as current", () => {
     const storage = memoryStorage();
     const session = { ...createTradingSession("session-1", "USD"), status: "completed" as const };
     session.endedAt = "2026-01-01T00:01:00.000Z";
@@ -57,8 +57,8 @@ describe("trading history storage", () => {
     expect(loadTradingHistory(storage)).toEqual({
       trades: [{ ...trade, sessionId: session.id }],
       sessions: [session],
-      currentSessionId: session.id,
-      sessionPnl: 2.5,
+      currentSessionId: null,
+      sessionPnl: 0,
       lossStreak: 0,
     });
   });
@@ -98,7 +98,8 @@ describe("trading history storage", () => {
       wins: 1,
       pnl: 0.95,
     });
-    expect(loaded.trades[0]?.sessionId).toBe(loaded.currentSessionId);
+    expect(loaded.currentSessionId).toBeNull();
+    expect(loaded.trades[0]?.sessionId).toBe(loaded.sessions[0]?.id);
   });
 
   it("marks a session interrupted if the app closed while it was running", () => {
@@ -116,6 +117,37 @@ describe("trading history storage", () => {
     expect(loadTradingHistory(storage).sessions[0]).toMatchObject({
       status: "interrupted",
       endedAt: expect.any(String),
+    });
+  });
+
+  it("starts a fresh cycle on reopen while keeping prior trades in session history", () => {
+    const previousSession = {
+      ...createTradingSession("previous-session", "USD"),
+      status: "completed" as const,
+      endedAt: "2026-01-01T00:01:00.000Z",
+      tradeCount: 1,
+      settledCount: 1,
+      wins: 1,
+      pnl: 0.95,
+    };
+    const previousTrade = { ...trade, sessionId: previousSession.id };
+    const storage = memoryStorage(
+      JSON.stringify({
+        version: 2,
+        trades: [previousTrade],
+        sessions: [previousSession],
+        currentSessionId: previousSession.id,
+        sessionPnl: 0.95,
+        lossStreak: 2,
+      }),
+    );
+
+    expect(loadTradingHistory(storage)).toEqual({
+      trades: [previousTrade],
+      sessions: [previousSession],
+      currentSessionId: null,
+      sessionPnl: 0,
+      lossStreak: 0,
     });
   });
 

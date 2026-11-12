@@ -34,6 +34,10 @@ function emptyHistory(): SavedTradingHistory {
   return { trades: [], sessions: [], currentSessionId: null, sessionPnl: 0, lossStreak: 0 };
 }
 
+function startFreshCycle(history: SavedTradingHistory): SavedTradingHistory {
+  return { ...history, currentSessionId: null, sessionPnl: 0, lossStreak: 0 };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -139,7 +143,7 @@ export function loadTradingHistory(storage = browserStorage()): SavedTradingHist
     if (!raw) return emptyHistory();
     const parsed: unknown = JSON.parse(raw);
     if (!isRecord(parsed)) return emptyHistory();
-    if (parsed["version"] === 1) return migrateVersionOne(parsed);
+    if (parsed["version"] === 1) return startFreshCycle(migrateVersionOne(parsed));
     if (parsed["version"] !== 2 || !Array.isArray(parsed["trades"])) return emptyHistory();
 
     const sessions = (Array.isArray(parsed["sessions"]) ? parsed["sessions"] : [])
@@ -152,22 +156,22 @@ export function loadTradingHistory(storage = browserStorage()): SavedTradingHist
       );
     const trades = parsed["trades"].filter(isTrade).slice(0, MAX_SAVED_TRADES);
     const requestedCurrentId = parsed["currentSessionId"];
-    const currentSessionId =
+    const restoredSessionId =
       typeof requestedCurrentId === "string" &&
       sessions.some((session) => session.id === requestedCurrentId)
         ? requestedCurrentId
         : (sessions[0]?.id ?? trades[0]?.sessionId ?? null);
 
-    return {
+    return startFreshCycle({
       trades: trades.map((trade) => {
-        const sessionId = trade.sessionId ?? currentSessionId;
+        const sessionId = trade.sessionId ?? restoredSessionId;
         return sessionId ? { ...trade, sessionId } : trade;
       }),
       sessions,
-      currentSessionId,
+      currentSessionId: restoredSessionId,
       sessionPnl: validAmount(parsed["sessionPnl"]),
       lossStreak: validLossStreak(parsed["lossStreak"]),
-    };
+    });
   } catch {
     return emptyHistory();
   }
