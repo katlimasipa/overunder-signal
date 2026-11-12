@@ -119,6 +119,37 @@ describe("trading history storage", () => {
     });
   });
 
+  it("starts a fresh cycle on reopen while keeping prior trades in session history", () => {
+    const previousSession = {
+      ...createTradingSession("previous-session", "USD"),
+      status: "completed" as const,
+      endedAt: "2026-01-01T00:01:00.000Z",
+      tradeCount: 1,
+      settledCount: 1,
+      wins: 1,
+      pnl: 0.95,
+    };
+    const previousTrade = { ...trade, sessionId: previousSession.id };
+    const storage = memoryStorage(
+      JSON.stringify({
+        version: 2,
+        trades: [previousTrade],
+        sessions: [previousSession],
+        currentSessionId: previousSession.id,
+        sessionPnl: 0.95,
+        lossStreak: 2,
+      }),
+    );
+
+    expect(loadTradingHistory(storage)).toEqual({
+      trades: [previousTrade],
+      sessions: [previousSession],
+      currentSessionId: null,
+      sessionPnl: 0,
+      lossStreak: 0,
+    });
+  });
+
   it("marks an in-progress save interrupted after a reload and preserves saved sessions", () => {
     const saving = { ...createTradingSession("saving-session", "USD"), status: "saving" as const };
     const saved = {
