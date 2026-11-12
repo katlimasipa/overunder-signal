@@ -304,12 +304,18 @@ describe("Deriv bot", () => {
     expect(statuses).toEqual(["Open", "Won"]);
   });
 
-  it("stops before a stake that would exceed the session stop loss", async () => {
+  it("allows a recovery stake above the stop loss and stops after realized losses hit the limit", async () => {
     const socket = new FakeDerivSocket();
     const onStop = vi.fn();
     const bot = new DerivBot(
       socket as unknown as DerivSocketClient,
-      { ...options, stopLoss: 0.5 },
+      {
+        ...options,
+        baseStake: 1.5,
+        stopLoss: 0.5,
+        takeProfit: null,
+        initialLossStreak: 1,
+      },
       {
         onTrade: vi.fn(),
         onPnl: vi.fn(),
@@ -318,9 +324,23 @@ describe("Deriv bot", () => {
       },
     );
     await bot.start();
-    socket.emitTick(1, "4.551");
-    expect(onStop).toHaveBeenCalledOnce();
-    expect(socket.requests).toHaveLength(0);
+    socket.emitTick(1, "4.854");
+    await until(() => socket.contractHandler !== null);
+
+    const proposal = socket.requests.find((request) => "proposal" in request);
+    expect(proposal).toMatchObject({
+      contract_type: "DIGITUNDER",
+      barrier: "8",
+      amount: 2.25,
+    });
+    expect(bot.isActive).toBe(true);
+    expect(onStop).not.toHaveBeenCalled();
+
+    socket.settle(-2.25);
+    await until(() => !bot.isBusy);
+
+    expect(bot.isActive).toBe(false);
+    expect(onStop).toHaveBeenCalledWith("Your stop loss limit has been reached.");
   });
 
   it("does not buy a proposed contract after the user pauses during price lookup", async () => {

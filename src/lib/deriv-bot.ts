@@ -100,6 +100,11 @@ export class DerivBot {
   private handleTick(tick: DerivTick): void {
     if (!this.active || this.busy || tick.epoch === this.lastEpoch) return;
     this.lastEpoch = tick.epoch;
+    if (this.options.stopLoss !== null && this.pnl <= -this.options.stopLoss) {
+      this.pause();
+      this.callbacks.onStop("Your stop loss limit has been reached.");
+      return;
+    }
     const digit = lastDigit(tick.quote, tick.pip_size ?? 2);
     if (digit === null) return;
 
@@ -126,11 +131,6 @@ export class DerivBot {
       this.options.recoveryMultiplier,
       this.lossStreak,
     );
-    if (this.options.stopLoss !== null && this.pnl - stake < -this.options.stopLoss) {
-      this.pause();
-      this.callbacks.onStop("The next recovery stake would exceed your stop loss.");
-      return;
-    }
     if (this.options.takeProfit !== null && this.pnl >= this.options.takeProfit) {
       this.pause();
       this.callbacks.onStop("Your take profit limit has been reached.");
