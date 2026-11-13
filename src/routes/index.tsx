@@ -824,7 +824,7 @@ function Dashboard() {
           </div>
         </div>
 
-        <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-3 xl:grid-cols-5">
           <Metric
             label="Session P/L"
             value={formatMoney(sessionPnl, selectedAccount?.currency ?? "USD")}
@@ -833,6 +833,15 @@ function Dashboard() {
           />
           <Metric label="Win rate" value={winRate} detail={`${wins} wins · ${losses} losses`} />
           <Metric label="Saved trades" value={String(trades.length)} detail="On this device" />
+          <Metric
+            label="Account balance"
+            value={
+              selectedAccount?.balance === null || selectedAccount?.balance === undefined
+                ? "—"
+                : formatMoney(selectedAccount.balance, selectedAccount.currency)
+            }
+            detail={selectedAccount ? "Current Deriv balance" : "Connect Deriv to view balance"}
+          />
           <Metric
             label="Bot status"
             value={botStatus}
@@ -908,10 +917,12 @@ function Dashboard() {
                     </Select>
                   </Field>
                   <div className="mt-4 flex items-center justify-between border-t border-border pt-4 text-sm">
-                    <span className="text-muted-foreground">Balance</span>
+                    <span className="text-muted-foreground">Account balance</span>
                     <span className="numeric font-semibold">
                       {selectedAccount?.balance === null || selectedAccount?.balance === undefined
-                        ? "—"
+                        ? accountsLoading
+                          ? "Loading…"
+                          : "Connect Deriv to view"
                         : formatMoney(selectedAccount.balance, selectedAccount.currency)}
                     </span>
                   </div>
