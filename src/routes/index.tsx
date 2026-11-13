@@ -128,6 +128,9 @@ function Dashboard() {
   const [accounts, setAccounts] = useState<DerivAccount[]>([]);
   const [selectedAccountId, setSelectedAccountId] = useState("");
   const [accountsLoading, setAccountsLoading] = useState(true);
+  const [balanceStatus, setBalanceStatus] = useState<
+    "loading" | "live" | "reconnecting" | "unavailable"
+  >("loading");
   const [authBusy, setAuthBusy] = useState(false);
   const [accountBusy, setAccountBusy] = useState(false);
   const [liveConfirmationOpen, setLiveConfirmationOpen] = useState(false);
@@ -156,6 +159,13 @@ function Dashboard() {
 
   const selectedAccount =
     accounts.find((account) => account.accountId === selectedAccountId) ?? null;
+  const accountBalanceLabel = selectedAccount
+    ? selectedAccount.balance === null || selectedAccount.balance === undefined
+      ? balanceStatus === "unavailable"
+        ? "Unavailable"
+        : "Syncing…"
+      : formatMoney(selectedAccount.balance, selectedAccount.currency)
+    : "—";
   const market = DERIV_MARKETS.find((entry) => entry.symbol === symbol) ?? DERIV_MARKETS[4];
   const latestTick = feed.at(-1) ?? null;
   const visibleChartFeed = useMemo(() => {
@@ -275,6 +285,95 @@ function Dashboard() {
       })
       .finally(() => setAccountsLoading(false));
   }, []);
+
+  useEffect(() => {
+    if (!selectedAccountId) {
+      setBalanceStatus("unavailable");
+      return;
+    }
+
+    let disposed = false;
+    let connecting = false;
+    let retryTimer: number | null = null;
+    let balanceSocket: DerivSocketClient | null = null;
+
+    const scheduleReconnect = (delay: number) => {
+      if (disposed) return;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      retryTimer = window.setTimeout(() => {
+        retryTimer = null;
+        void connectBalance();
+      }, delay);
+    };
+
+    const connectBalance = async () => {
+      if (disposed || connecting) return;
+      connecting = true;
+      setBalanceStatus("reconnecting");
+
+      try {
+        const response = await fetch("/api/deriv/otp", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          credentials: "same-origin",
+          cache: "no-store",
+          body: JSON.stringify({ accountId: selectedAccountId }),
+        });
+        const payload = (await response.json()) as { url?: string; error?: string };
+        if (!response.ok || !payload.url) {
+          throw new Error(payload.error ?? "Could not read the Deriv account balance.");
+        }
+
+        const socket = new DerivSocketClient(payload.url);
+        balanceSocket = socket;
+        socket.onBalance((balance) => {
+          const amount = Number(balance.balance);
+          if (!Number.isFinite(amount)) return;
+          setAccounts((current) =>
+            current.map((account) =>
+              account.accountId === selectedAccountId
+                ? {
+                    ...account,
+                    balance: amount,
+                    currency:
+                      typeof balance.currency === "string" ? balance.currency : account.currency,
+                  }
+                : account,
+            ),
+          );
+          setBalanceStatus("live");
+        });
+        socket.onClose(() => {
+          if (balanceSocket === socket) balanceSocket = null;
+          if (disposed) return;
+          setBalanceStatus("reconnecting");
+          scheduleReconnect(5000);
+        });
+
+        await socket.connect();
+        if (disposed) {
+          socket.close();
+          return;
+        }
+        await socket.request({ balance: 1, subscribe: 1 });
+      } catch {
+        if (disposed) return;
+        balanceSocket?.close();
+        setBalanceStatus("unavailable");
+        scheduleReconnect(15000);
+      } finally {
+        connecting = false;
+      }
+    };
+
+    void connectBalance();
+    return () => {
+      disposed = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      balanceSocket?.close();
+      balanceSocket = null;
+    };
+  }, [selectedAccountId]);
 
   useEffect(() => {
     let disposed = false;
@@ -685,6 +784,23 @@ function Dashboard() {
           </div>
 
           <div className="flex shrink-0 items-center gap-1 sm:gap-3">
+            {selectedAccount && (
+              <div
+                className="hidden items-center gap-2 rounded-md border border-border bg-card px-2.5 py-2 sm:flex"
+                aria-live="polite"
+                aria-label={`Account balance ${accountBalanceLabel}`}
+              >
+                <span
+                  className={`size-2 rounded-full ${balanceStatus === "live" ? "bg-positive" : "bg-amber-500"}`}
+                />
+                <span className="hidden text-[10px] font-semibold uppercase tracking-wide text-muted-foreground md:inline">
+                  Balance
+                </span>
+                <span className="numeric text-xs font-semibold sm:text-sm">
+                  {accountBalanceLabel}
+                </span>
+              </div>
+            )}
             <div className="hidden items-center gap-2 rounded-md border border-border bg-card px-3 py-2 sm:flex">
               <span
                 className={`size-2 rounded-full ${feedStatus === "live" ? "bg-positive" : "bg-amber-500"}`}
@@ -835,12 +951,14 @@ function Dashboard() {
           <Metric label="Saved trades" value={String(trades.length)} detail="On this device" />
           <Metric
             label="Account balance"
-            value={
-              selectedAccount?.balance === null || selectedAccount?.balance === undefined
-                ? "—"
-                : formatMoney(selectedAccount.balance, selectedAccount.currency)
+            value={accountBalanceLabel}
+            detail={
+              selectedAccount
+                ? balanceStatus === "live"
+                  ? "Live Deriv balance"
+                  : "Syncing Deriv balance"
+                : "Connect Deriv to view balance"
             }
-            detail={selectedAccount ? "Current Deriv balance" : "Connect Deriv to view balance"}
           />
           <Metric
             label="Bot status"
@@ -918,12 +1036,8 @@ function Dashboard() {
                   </Field>
                   <div className="mt-4 flex items-center justify-between border-t border-border pt-4 text-sm">
                     <span className="text-muted-foreground">Account balance</span>
-                    <span className="numeric font-semibold">
-                      {selectedAccount?.balance === null || selectedAccount?.balance === undefined
-                        ? accountsLoading
-                          ? "Loading…"
-                          : "Connect Deriv to view"
-                        : formatMoney(selectedAccount.balance, selectedAccount.currency)}
+                    <span className="numeric font-semibold" aria-live="polite">
+                      {accountBalanceLabel}
                     </span>
                   </div>
                 </>

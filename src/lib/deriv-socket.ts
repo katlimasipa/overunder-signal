@@ -7,11 +7,17 @@ export interface DerivTick {
   symbol?: string;
 }
 
+export interface DerivBalance {
+  balance?: number | string;
+  currency?: string;
+}
+
 export interface DerivMessage {
   msg_type?: string;
   req_id?: number;
   error?: { code?: string; message?: string };
   tick?: DerivTick;
+  balance?: DerivBalance;
   history?: { prices?: Array<number | string>; times?: number[] };
   proposal?: { id?: string; ask_price?: number | string; payout?: number | string };
   buy?: { contract_id?: number | string; buy_price?: number | string };
@@ -34,6 +40,7 @@ export class DerivSocketClient {
   private requestId = 0;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly tickHandlers = new Set<(tick: DerivTick) => void>();
+  private readonly balanceHandlers = new Set<(balance: DerivBalance) => void>();
   private readonly closeHandlers = new Set<(reason: string) => void>();
   private readonly contractHandlers = new Map<string, Set<ContractUpdateHandler>>();
   private readonly defaultUrl: string;
@@ -91,6 +98,11 @@ export class DerivSocketClient {
   onTick(handler: (tick: DerivTick) => void): () => void {
     this.tickHandlers.add(handler);
     return () => this.tickHandlers.delete(handler);
+  }
+
+  onBalance(handler: (balance: DerivBalance) => void): () => void {
+    this.balanceHandlers.add(handler);
+    return () => this.balanceHandlers.delete(handler);
   }
 
   onClose(handler: (reason: string) => void): () => void {
@@ -199,6 +211,10 @@ export class DerivSocketClient {
 
     if (message.msg_type === "tick" && message.tick) {
       for (const handler of this.tickHandlers) handler(message.tick);
+    }
+
+    if (message.msg_type === "balance" && message.balance) {
+      for (const handler of this.balanceHandlers) handler(message.balance);
     }
 
     if (message.msg_type === "proposal_open_contract" && message.proposal_open_contract) {
